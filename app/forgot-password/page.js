@@ -1,0 +1,4 @@
+import Link from "next/link";
+export default function ForgotPassword() {
+ return <main className="min-h-screen grid place-items-center p-6"><div className="w-full max-w-md bg-white border rounded-2xl p-8 shadow-sm"><Link href="/login" className="text-sm text-slate-500">← Back to sign in</Link><h1 className="mt-8 text-3xl font-bold">Reset your password</h1><p className="mt-2 text-slate-500">Enter your email and we'll send reset instructions.</p><label className="block mt-7 text-sm font-medium">Email<input className="mt-2 w-full border rounded-xl px-4 py-3" placeholder="you@clinic.com"/></label><button className="mt-4 w-full bg-slate-950 text-white rounded-xl py-3 font-semibold">Send reset link</button></div></main>;
+}
