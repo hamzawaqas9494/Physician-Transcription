@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@aws-sdk/rds-signer": "^3.1121.0",
+    "@neondatabase/serverless": "^1.1.0",
     "@vercel/functions": "^3.9.5",
     "bcryptjs": "^3.0.3",
     "dotenv": "^17.4.2",
