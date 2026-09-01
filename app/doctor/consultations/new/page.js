@@ -1,14 +1,59 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
+
 import { useRouter, useSearchParams } from "next/navigation";
+
 import Link from "next/link";
 
 import Shell from "@/components/Shell";
 import Icon from "@/components/Icon";
 import Badge from "@/components/Badge";
 
+// ======================================================
+// OUTER PAGE
+// IMPORTANT:
+// useSearchParams() is NOT used here.
+// Inner component is wrapped inside Suspense.
+// ======================================================
+
 export default function NewConsultationPage() {
+  return (
+    <Suspense fallback={<ConsultationLoading />}>
+      <NewConsultationContent />
+    </Suspense>
+  );
+}
+
+// ======================================================
+// SUSPENSE FALLBACK
+// ======================================================
+
+function ConsultationLoading() {
+  return (
+    <Shell
+      role="doctor"
+      title="New consultation"
+      subtitle="Loading consultation"
+    >
+      <div className="max-w-5xl">
+        <div className="bg-white border rounded-2xl px-6 py-20 text-center">
+          <div className="mx-auto h-9 w-9 animate-spin rounded-full border-2 border-slate-200 border-t-slate-900" />
+
+          <p className="mt-4 text-sm text-slate-500">Loading consultation...</p>
+        </div>
+      </div>
+    </Shell>
+  );
+}
+
+// ======================================================
+// INNER CLIENT COMPONENT
+// useSearchParams() is safe here because parent wraps it
+// in Suspense.
+// ======================================================
+
+function NewConsultationContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -19,8 +64,11 @@ export default function NewConsultationPage() {
   // =========================
 
   const [appointment, setAppointment] = useState(null);
+
   const [patient, setPatient] = useState(null);
+
   const [medicalHistory, setMedicalHistory] = useState([]);
+
   const [consultation, setConsultation] = useState(null);
 
   // =========================
@@ -28,9 +76,11 @@ export default function NewConsultationPage() {
   // =========================
 
   const [loading, setLoading] = useState(true);
+
   const [starting, setStarting] = useState(false);
 
   const [error, setError] = useState("");
+
   const [success, setSuccess] = useState("");
 
   // =========================
@@ -38,14 +88,17 @@ export default function NewConsultationPage() {
   // =========================
 
   const [isRecording, setIsRecording] = useState(false);
+
   const [isPaused, setIsPaused] = useState(false);
 
   const [recordingSeconds, setRecordingSeconds] = useState(0);
 
   const [audioBlob, setAudioBlob] = useState(null);
+
   const [audioUrl, setAudioUrl] = useState("");
 
   const [uploadingAudio, setUploadingAudio] = useState(false);
+
   const [uploadedRecording, setUploadedRecording] = useState(null);
 
   // =========================
@@ -53,6 +106,7 @@ export default function NewConsultationPage() {
   // =========================
 
   const [transcribing, setTranscribing] = useState(false);
+
   const [transcript, setTranscript] = useState(null);
 
   // =========================
@@ -65,22 +119,47 @@ export default function NewConsultationPage() {
   const chunksRef = useRef([]);
 
   // =========================
+  // SAFE JSON RESPONSE
+  // =========================
+
+  async function getResponseData(response) {
+    const contentType = response.headers.get("content-type") || "";
+
+    if (contentType.includes("application/json")) {
+      return await response.json();
+    }
+
+    const text = await response.text();
+
+    throw new Error(
+      text
+        ? `Server returned an invalid response (${response.status}).`
+        : "Server returned an invalid response.",
+    );
+  }
+
+  // =========================
   // LOAD CONSULTATION DATA
   // =========================
 
   async function loadConsultationData() {
     if (!appointmentId) {
       setError("Appointment ID is missing.");
+
       setLoading(false);
+
       return;
     }
 
     try {
       setLoading(true);
+
       setError("");
 
       const response = await fetch(
-        `/api/doctors/consultations/start?appointment=${appointmentId}`,
+        `/api/doctors/consultations/start?appointment=${encodeURIComponent(
+          appointmentId,
+        )}`,
         {
           method: "GET",
           credentials: "include",
@@ -88,37 +167,55 @@ export default function NewConsultationPage() {
         },
       );
 
-      const data = await response.json();
+      const data = await getResponseData(response);
 
       if (response.status === 401) {
         router.replace("/login");
+
         return;
       }
 
       if (response.status === 403) {
         router.replace("/unauthorized");
+
         return;
       }
 
       if (!response.ok) {
-        setError(
-          data.message || "Unable to load consultation information.",
-        );
+        setError(data.message || "Unable to load consultation information.");
+
         return;
       }
 
       setAppointment(data.appointment || null);
+
       setPatient(data.patient || null);
+
       setMedicalHistory(data.medical_history || []);
+
       setConsultation(data.consultation || null);
+
+      // If backend later returns existing audio
+      if (data.audio_recording) {
+        setUploadedRecording(data.audio_recording);
+      }
+
+      // If backend later returns existing transcript
+      if (data.transcript) {
+        setTranscript(data.transcript);
+      }
     } catch (error) {
       console.error("LOAD CONSULTATION ERROR:", error);
 
-      setError("Unable to connect to the server.");
+      setError(error.message || "Unable to connect to the server.");
     } finally {
       setLoading(false);
     }
   }
+
+  // =========================
+  // INITIAL LOAD
+  // =========================
 
   useEffect(() => {
     loadConsultationData();
@@ -131,51 +228,51 @@ export default function NewConsultationPage() {
   async function handleStartConsultation() {
     if (!appointmentId) {
       setError("Appointment ID is missing.");
+
       return;
     }
 
     try {
       setStarting(true);
+
       setError("");
       setSuccess("");
 
-      const response = await fetch(
-        "/api/doctors/consultations/start",
-        {
-          method: "POST",
+      const response = await fetch("/api/doctors/consultations/start", {
+        method: "POST",
 
-          headers: {
-            "Content-Type": "application/json",
-          },
-
-          credentials: "include",
-
-          body: JSON.stringify({
-            appointment_id: Number(appointmentId),
-          }),
+        headers: {
+          "Content-Type": "application/json",
         },
-      );
 
-      const data = await response.json();
+        credentials: "include",
+
+        body: JSON.stringify({
+          appointment_id: Number(appointmentId),
+        }),
+      });
+
+      const data = await getResponseData(response);
 
       if (response.status === 401) {
         router.replace("/login");
+
         return;
       }
 
       if (response.status === 403) {
         router.replace("/unauthorized");
+
         return;
       }
 
       if (!response.ok) {
-        setError(
-          data.message || "Unable to start consultation.",
-        );
+        setError(data.message || "Unable to start consultation.");
+
         return;
       }
 
-      setConsultation(data.consultation);
+      setConsultation(data.consultation || null);
 
       setAppointment((previous) =>
         previous
@@ -186,13 +283,11 @@ export default function NewConsultationPage() {
           : previous,
       );
 
-      setSuccess(
-        data.message || "Consultation started successfully.",
-      );
+      setSuccess(data.message || "Consultation started successfully.");
     } catch (error) {
       console.error("START CONSULTATION ERROR:", error);
 
-      setError("Unable to connect to the server.");
+      setError(error.message || "Unable to connect to the server.");
     } finally {
       setStarting(false);
     }
@@ -203,7 +298,7 @@ export default function NewConsultationPage() {
   // =========================
 
   function startTimer() {
-    clearInterval(timerRef.current);
+    stopTimer();
 
     timerRef.current = setInterval(() => {
       setRecordingSeconds((previous) => previous + 1);
@@ -213,6 +308,7 @@ export default function NewConsultationPage() {
   function stopTimer() {
     if (timerRef.current) {
       clearInterval(timerRef.current);
+
       timerRef.current = null;
     }
   }
@@ -221,11 +317,27 @@ export default function NewConsultationPage() {
     const safeSeconds = Number(totalSeconds) || 0;
 
     const minutes = Math.floor(safeSeconds / 60);
+
     const seconds = Math.floor(safeSeconds % 60);
 
-    return `${String(minutes).padStart(2, "0")}:${String(
-      seconds,
-    ).padStart(2, "0")}`;
+    return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(
+      2,
+      "0",
+    )}`;
+  }
+
+  // =========================
+  // STOP MICROPHONE STREAM
+  // =========================
+
+  function stopMicrophoneStream() {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => {
+        track.stop();
+      });
+
+      streamRef.current = null;
+    }
   }
 
   // =========================
@@ -239,50 +351,45 @@ export default function NewConsultationPage() {
 
       if (!consultation?.id) {
         setError("Start the consultation before recording.");
+
         return;
       }
 
       if (
+        typeof window === "undefined" ||
         !navigator.mediaDevices ||
         !navigator.mediaDevices.getUserMedia ||
         typeof MediaRecorder === "undefined"
       ) {
-        setError(
-          "Microphone recording is not supported in this browser.",
-        );
+        setError("Microphone recording is not supported in this browser.");
+
         return;
       }
 
-      const stream =
-        await navigator.mediaDevices.getUserMedia({
-          audio: true,
-        });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+      });
 
       streamRef.current = stream;
 
       let mimeType = "";
 
-      if (
-        MediaRecorder.isTypeSupported(
-          "audio/webm;codecs=opus",
-        )
-      ) {
+      if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) {
         mimeType = "audio/webm;codecs=opus";
-      } else if (
-        MediaRecorder.isTypeSupported("audio/webm")
-      ) {
+      } else if (MediaRecorder.isTypeSupported("audio/webm")) {
         mimeType = "audio/webm";
-      } else if (
-        MediaRecorder.isTypeSupported("audio/ogg")
-      ) {
+      } else if (MediaRecorder.isTypeSupported("audio/ogg")) {
         mimeType = "audio/ogg";
       }
 
       const recorder = mimeType
-        ? new MediaRecorder(stream, { mimeType })
+        ? new MediaRecorder(stream, {
+            mimeType,
+          })
         : new MediaRecorder(stream);
 
       recorderRef.current = recorder;
+
       chunksRef.current = [];
 
       if (audioUrl) {
@@ -291,7 +398,9 @@ export default function NewConsultationPage() {
 
       setAudioBlob(null);
       setAudioUrl("");
+
       setUploadedRecording(null);
+
       setTranscript(null);
 
       setRecordingSeconds(0);
@@ -304,88 +413,77 @@ export default function NewConsultationPage() {
       };
 
       recorder.onstop = () => {
-        const finalMimeType =
-          recorder.mimeType || "audio/webm";
+        const finalMimeType = recorder.mimeType || "audio/webm";
 
-        const blob = new Blob(
-          chunksRef.current,
-          {
-            type: finalMimeType,
-          },
-        );
+        const blob = new Blob(chunksRef.current, {
+          type: finalMimeType,
+        });
 
-        const previewUrl =
-          URL.createObjectURL(blob);
+        const previewUrl = URL.createObjectURL(blob);
 
         setAudioBlob(blob);
+
         setAudioUrl(previewUrl);
 
         setIsRecording(false);
+
         setIsPaused(false);
 
         stopTimer();
 
-        if (streamRef.current) {
-          streamRef.current
-            .getTracks()
-            .forEach((track) => track.stop());
+        stopMicrophoneStream();
 
-          streamRef.current = null;
-        }
+        recorderRef.current = null;
       };
 
       recorder.onerror = (event) => {
-        console.error(
-          "MEDIA RECORDER ERROR:",
-          event.error,
-        );
+        console.error("MEDIA RECORDER ERROR:", event.error);
 
-        setError(
-          "An error occurred while recording.",
-        );
+        setError("An error occurred while recording.");
 
         setIsRecording(false);
+
         setIsPaused(false);
 
         stopTimer();
+
+        stopMicrophoneStream();
+
+        recorderRef.current = null;
       };
 
       recorder.start(1000);
 
       setIsRecording(true);
 
+      setIsPaused(false);
+
       startTimer();
     } catch (error) {
       console.error("START RECORDING ERROR:", error);
+
+      stopMicrophoneStream();
 
       if (error.name === "NotAllowedError") {
         setError(
           "Microphone permission was denied. Please allow microphone access.",
         );
       } else if (error.name === "NotFoundError") {
-        setError(
-          "No microphone was found on this device.",
-        );
+        setError("No microphone was found on this device.");
       } else {
-        setError(
-          "Unable to start microphone recording.",
-        );
+        setError("Unable to start microphone recording.");
       }
     }
   }
 
   // =========================
-  // PAUSE / RESUME / STOP
+  // PAUSE RECORDING
   // =========================
 
   function handlePauseRecording() {
     const recorder = recorderRef.current;
 
-    if (!recorder) {
-      return;
-    }
-
-    if (recorder.state === "recording") {
+    if (recorder && recorder.state === "recording") {
       recorder.pause();
 
       setIsPaused(true);
@@ -394,14 +492,14 @@ export default function NewConsultationPage() {
     }
   }
 
+  // =========================
+  // RESUME RECORDING
+  // =========================
+
   function handleResumeRecording() {
     const recorder = recorderRef.current;
 
-    if (!recorder) {
-      return;
-    }
-
-    if (recorder.state === "paused") {
+    if (recorder && recorder.state === "paused") {
       recorder.resume();
 
       setIsPaused(false);
@@ -410,16 +508,16 @@ export default function NewConsultationPage() {
     }
   }
 
+  // =========================
+  // STOP RECORDING
+  // =========================
+
   function handleStopRecording() {
     const recorder = recorderRef.current;
 
-    if (!recorder) {
-      return;
-    }
-
     if (
-      recorder.state === "recording" ||
-      recorder.state === "paused"
+      recorder &&
+      (recorder.state === "recording" || recorder.state === "paused")
     ) {
       recorder.stop();
     }
@@ -435,12 +533,17 @@ export default function NewConsultationPage() {
     }
 
     setAudioBlob(null);
+
     setAudioUrl("");
+
     setRecordingSeconds(0);
+
     setUploadedRecording(null);
+
     setTranscript(null);
 
     setError("");
+
     setSuccess("");
   }
 
@@ -451,16 +554,19 @@ export default function NewConsultationPage() {
   async function handleUploadAudio() {
     if (!audioBlob) {
       setError("Record audio before saving.");
+
       return;
     }
 
     if (!consultation?.id) {
       setError("Consultation ID is missing.");
+
       return;
     }
 
     try {
       setUploadingAudio(true);
+
       setError("");
       setSuccess("");
 
@@ -470,13 +576,9 @@ export default function NewConsultationPage() {
         extension = "ogg";
       } else if (audioBlob.type.includes("mp4")) {
         extension = "mp4";
-      } else if (
-        audioBlob.type.includes("mpeg")
-      ) {
+      } else if (audioBlob.type.includes("mpeg")) {
         extension = "mp3";
-      } else if (
-        audioBlob.type.includes("wav")
-      ) {
+      } else if (audioBlob.type.includes("wav")) {
         extension = "wav";
       }
 
@@ -490,50 +592,39 @@ export default function NewConsultationPage() {
 
       const formData = new FormData();
 
-      formData.append(
-        "consultation_id",
-        String(consultation.id),
-      );
+      formData.append("consultation_id", String(consultation.id));
 
-      formData.append(
-        "duration_seconds",
-        String(recordingSeconds),
-      );
+      formData.append("duration_seconds", String(recordingSeconds));
 
       formData.append("audio", file);
 
-      const response = await fetch(
-        "/api/doctors/consultations/audio",
-        {
-          method: "POST",
-          credentials: "include",
-          body: formData,
-        },
-      );
+      const response = await fetch("/api/doctors/consultations/audio", {
+        method: "POST",
+        credentials: "include",
+        body: formData,
+      });
 
-      const data = await response.json();
+      const data = await getResponseData(response);
 
       if (response.status === 401) {
         router.replace("/login");
+
         return;
       }
 
       if (response.status === 403) {
         router.replace("/unauthorized");
+
         return;
       }
 
       if (!response.ok) {
-        setError(
-          data.message ||
-            "Unable to save audio recording.",
-        );
+        setError(data.message || "Unable to save audio recording.");
+
         return;
       }
 
-      setUploadedRecording(
-        data.audio_recording || null,
-      );
+      setUploadedRecording(data.audio_recording || null);
 
       setConsultation((previous) =>
         previous
@@ -544,16 +635,11 @@ export default function NewConsultationPage() {
           : previous,
       );
 
-      setSuccess(
-        data.message ||
-          "Audio recording saved successfully.",
-      );
+      setSuccess(data.message || "Audio recording saved successfully.");
     } catch (error) {
       console.error("UPLOAD AUDIO ERROR:", error);
 
-      setError(
-        "Unable to upload audio recording.",
-      );
+      setError(error.message || "Unable to upload audio recording.");
     } finally {
       setUploadingAudio(false);
     }
@@ -566,66 +652,59 @@ export default function NewConsultationPage() {
   async function handleGenerateTranscript() {
     if (!consultation?.id) {
       setError("Consultation ID is missing.");
+
       return;
     }
 
     if (!uploadedRecording?.id) {
-      setError(
-        "Please save the audio recording first.",
-      );
+      setError("Please save the audio recording first.");
+
       return;
     }
 
     try {
       setTranscribing(true);
+
       setError("");
       setSuccess("");
 
-      const response = await fetch(
-        "/api/doctors/consultations/transcribe",
-        {
-          method: "POST",
+      const response = await fetch("/api/doctors/consultations/transcribe", {
+        method: "POST",
 
-          headers: {
-            "Content-Type":
-              "application/json",
-          },
-
-          credentials: "include",
-
-          body: JSON.stringify({
-            consultation_id:
-              consultation.id,
-
-            audio_recording_id:
-              uploadedRecording.id,
-          }),
+        headers: {
+          "Content-Type": "application/json",
         },
-      );
 
-      const data = await response.json();
+        credentials: "include",
+
+        body: JSON.stringify({
+          consultation_id: consultation.id,
+
+          audio_recording_id: uploadedRecording.id,
+        }),
+      });
+
+      const data = await getResponseData(response);
 
       if (response.status === 401) {
         router.replace("/login");
+
         return;
       }
 
       if (response.status === 403) {
         router.replace("/unauthorized");
+
         return;
       }
 
       if (!response.ok) {
-        setError(
-          data.message ||
-            "Unable to generate transcript.",
-        );
+        setError(data.message || "Unable to generate transcript.");
+
         return;
       }
 
-      setTranscript(
-        data.transcript || null,
-      );
+      setTranscript(data.transcript || null);
 
       setConsultation((previous) =>
         previous
@@ -636,19 +715,11 @@ export default function NewConsultationPage() {
           : previous,
       );
 
-      setSuccess(
-        data.message ||
-          "Transcript generated successfully.",
-      );
+      setSuccess(data.message || "Transcript generated successfully.");
     } catch (error) {
-      console.error(
-        "GENERATE TRANSCRIPT ERROR:",
-        error,
-      );
+      console.error("GENERATE TRANSCRIPT ERROR:", error);
 
-      setError(
-        "Unable to generate transcript.",
-      );
+      setError(error.message || "Unable to generate transcript.");
     } finally {
       setTranscribing(false);
     }
@@ -662,11 +733,13 @@ export default function NewConsultationPage() {
     return () => {
       stopTimer();
 
-      if (streamRef.current) {
-        streamRef.current
-          .getTracks()
-          .forEach((track) => track.stop());
+      if (recorderRef.current && recorderRef.current.state !== "inactive") {
+        try {
+          recorderRef.current.stop();
+        } catch {}
       }
+
+      stopMicrophoneStream();
     };
   }, []);
 
@@ -687,25 +760,17 @@ export default function NewConsultationPage() {
       return null;
     }
 
-    const birthDate =
-      new Date(dateOfBirth);
+    const birthDate = new Date(dateOfBirth);
 
-    const today =
-      new Date();
+    const today = new Date();
 
-    let age =
-      today.getFullYear() -
-      birthDate.getFullYear();
+    let age = today.getFullYear() - birthDate.getFullYear();
 
-    const monthDifference =
-      today.getMonth() -
-      birthDate.getMonth();
+    const monthDifference = today.getMonth() - birthDate.getMonth();
 
     if (
       monthDifference < 0 ||
-      (monthDifference === 0 &&
-        today.getDate() <
-          birthDate.getDate())
+      (monthDifference === 0 && today.getDate() < birthDate.getDate())
     ) {
       age--;
     }
@@ -718,14 +783,11 @@ export default function NewConsultationPage() {
       return "—";
     }
 
-    return new Intl.DateTimeFormat(
-      "en-GB",
-      {
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-      },
-    ).format(new Date(date));
+    return new Intl.DateTimeFormat("en-GB", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    }).format(new Date(date));
   }
 
   function formatTime(time) {
@@ -733,27 +795,35 @@ export default function NewConsultationPage() {
       return "—";
     }
 
-    const [hours, minutes] =
-      time.split(":");
+    const [hours, minutes] = time.split(":");
 
     const date = new Date();
 
     date.setHours(Number(hours));
+
     date.setMinutes(Number(minutes));
+
     date.setSeconds(0);
 
-    return date.toLocaleTimeString(
-      "en-US",
-      {
-        hour: "numeric",
-        minute: "2-digit",
-        hour12: true,
-      },
-    );
+    return date.toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    });
   }
 
   function getAppointmentStatus(status) {
     const statuses = {
+      scheduled: {
+        label: "Scheduled",
+        tone: "gray",
+      },
+
+      checked_in: {
+        label: "Checked in",
+        tone: "blue",
+      },
+
       waiting: {
         label: "Waiting",
         tone: "amber",
@@ -768,11 +838,22 @@ export default function NewConsultationPage() {
         label: "Completed",
         tone: "green",
       },
+
+      cancelled: {
+        label: "Cancelled",
+        tone: "red",
+      },
+
+      no_show: {
+        label: "No show",
+        tone: "red",
+      },
     };
 
     return (
       statuses[status] || {
         label: status || "Unknown",
+
         tone: "gray",
       }
     );
@@ -783,30 +864,14 @@ export default function NewConsultationPage() {
   // =========================
 
   if (loading) {
-    return (
-      <Shell
-        role="doctor"
-        title="New consultation"
-        subtitle="Loading consultation"
-      >
-        <div className="max-w-5xl">
-          <div className="bg-white border rounded-2xl px-6 py-20 text-center">
-            <div className="mx-auto h-9 w-9 animate-spin rounded-full border-2 border-slate-200 border-t-slate-900" />
-
-            <p className="mt-4 text-sm text-slate-500">
-              Loading consultation...
-            </p>
-          </div>
-        </div>
-      </Shell>
-    );
+    return <ConsultationLoading />;
   }
 
   // =========================
   // ERROR STATE
   // =========================
 
-  if (error && !patient) {
+  if (!appointmentId || (error && !patient)) {
     return (
       <Shell
         role="doctor"
@@ -819,12 +884,10 @@ export default function NewConsultationPage() {
               !
             </div>
 
-            <h2 className="mt-4 text-xl font-bold">
-              Consultation unavailable
-            </h2>
+            <h2 className="mt-4 text-xl font-bold">Consultation unavailable</h2>
 
             <p className="mt-2 text-sm text-slate-500">
-              {error}
+              {error || "Appointment ID is missing."}
             </p>
 
             <Link
@@ -847,21 +910,13 @@ export default function NewConsultationPage() {
   // PAGE DATA
   // =========================
 
-  const age =
-    calculateAge(patient.date_of_birth);
+  const age = calculateAge(patient.date_of_birth);
 
-  const appointmentStatus =
-    getAppointmentStatus(
-      appointment.status,
-    );
+  const appointmentStatus = getAppointmentStatus(appointment.status);
 
-  const latestHistory =
-    medicalHistory.length > 0
-      ? medicalHistory[0]
-      : null;
+  const latestHistory = medicalHistory.length > 0 ? medicalHistory[0] : null;
 
-  const consultationStarted =
-    Boolean(consultation);
+  const consultationStarted = Boolean(consultation);
 
   // =========================
   // PAGE
@@ -874,7 +929,9 @@ export default function NewConsultationPage() {
       subtitle={`${patient.name} · ${patient.patient_code}`}
     >
       <div className="max-w-5xl">
-        {/* ALERTS */}
+        {/* =========================
+            ALERTS
+        ========================== */}
 
         {error && (
           <div className="mb-5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -904,14 +961,11 @@ export default function NewConsultationPage() {
               </h2>
 
               <p className="mt-2 text-sm text-slate-500">
-                {age !== null
-                  ? `${age} years`
-                  : "Age not added"}
+                {age !== null ? `${age} years` : "Age not added"}
 
                 {" · "}
 
-                {patient.gender ||
-                  "Gender not added"}
+                {patient.gender || "Gender not added"}
 
                 {" · "}
 
@@ -919,16 +973,12 @@ export default function NewConsultationPage() {
               </p>
 
               {patient.phone && (
-                <p className="mt-1 text-sm text-slate-500">
-                  {patient.phone}
-                </p>
+                <p className="mt-1 text-sm text-slate-500">{patient.phone}</p>
               )}
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
-              <Badge
-                tone={appointmentStatus.tone}
-              >
+              <Badge tone={appointmentStatus.tone}>
                 {appointmentStatus.label}
               </Badge>
 
@@ -946,56 +996,39 @@ export default function NewConsultationPage() {
           <div className="mt-6 border-t pt-5">
             <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
               <div>
-                <p className="text-xs text-slate-400">
-                  Appointment
-                </p>
+                <p className="text-xs text-slate-400">Appointment</p>
+
+                <p className="mt-1 text-sm font-semibold">#{appointment.id}</p>
+              </div>
+
+              <div>
+                <p className="text-xs text-slate-400">Date</p>
 
                 <p className="mt-1 text-sm font-semibold">
-                  #{appointment.id}
+                  {formatDate(appointment.appointment_date)}
                 </p>
               </div>
 
               <div>
-                <p className="text-xs text-slate-400">
-                  Date
-                </p>
+                <p className="text-xs text-slate-400">Time</p>
 
                 <p className="mt-1 text-sm font-semibold">
-                  {formatDate(
-                    appointment.appointment_date,
-                  )}
+                  {formatTime(appointment.appointment_time)}
                 </p>
               </div>
 
               <div>
-                <p className="text-xs text-slate-400">
-                  Time
-                </p>
+                <p className="text-xs text-slate-400">Token</p>
 
                 <p className="mt-1 text-sm font-semibold">
-                  {formatTime(
-                    appointment.appointment_time,
-                  )}
-                </p>
-              </div>
-
-              <div>
-                <p className="text-xs text-slate-400">
-                  Token
-                </p>
-
-                <p className="mt-1 text-sm font-semibold">
-                  {appointment.token_number ||
-                    "—"}
+                  {appointment.token_number || "—"}
                 </p>
               </div>
             </div>
 
             {appointment.notes && (
               <div className="mt-5 rounded-xl bg-slate-50 p-4">
-                <p className="text-xs text-slate-400">
-                  Appointment notes
-                </p>
+                <p className="text-xs text-slate-400">Appointment notes</p>
 
                 <p className="mt-1 text-sm text-slate-700">
                   {appointment.notes}
@@ -1012,9 +1045,7 @@ export default function NewConsultationPage() {
         <section className="mt-6 bg-white border rounded-2xl">
           <div className="p-5 border-b flex items-center justify-between gap-4">
             <div>
-              <h3 className="font-semibold">
-                Patient history
-              </h3>
+              <h3 className="font-semibold">Patient history</h3>
 
               <p className="mt-1 text-xs text-slate-500">
                 Latest medical information before consultation
@@ -1038,68 +1069,50 @@ export default function NewConsultationPage() {
           ) : (
             <div className="p-5 grid gap-5 md:grid-cols-2 lg:grid-cols-3">
               <div>
-                <p className="text-xs text-slate-400">
-                  Previous diseases
-                </p>
+                <p className="text-xs text-slate-400">Previous diseases</p>
 
                 <p className="mt-1 text-sm font-medium">
-                  {latestHistory.previous_diseases ||
-                    "None reported"}
+                  {latestHistory.previous_diseases || "None reported"}
                 </p>
               </div>
 
               <div>
-                <p className="text-xs text-slate-400">
-                  Allergies
-                </p>
+                <p className="text-xs text-slate-400">Allergies</p>
 
                 <p className="mt-1 text-sm font-medium">
-                  {latestHistory.allergies ||
-                    "None reported"}
+                  {latestHistory.allergies || "None reported"}
                 </p>
               </div>
 
               <div>
-                <p className="text-xs text-slate-400">
-                  Current medications
-                </p>
+                <p className="text-xs text-slate-400">Current medications</p>
 
                 <p className="mt-1 text-sm font-medium">
-                  {latestHistory.current_medications ||
-                    "None reported"}
+                  {latestHistory.current_medications || "None reported"}
                 </p>
               </div>
 
               <div>
-                <p className="text-xs text-slate-400">
-                  Previous surgeries
-                </p>
+                <p className="text-xs text-slate-400">Previous surgeries</p>
 
                 <p className="mt-1 text-sm font-medium">
-                  {latestHistory.previous_surgeries ||
-                    "None reported"}
+                  {latestHistory.previous_surgeries || "None reported"}
                 </p>
               </div>
 
               <div>
-                <p className="text-xs text-slate-400">
-                  Family history
-                </p>
+                <p className="text-xs text-slate-400">Family history</p>
 
                 <p className="mt-1 text-sm font-medium">
-                  {latestHistory.family_history ||
-                    "None reported"}
+                  {latestHistory.family_history || "None reported"}
                 </p>
               </div>
 
               <div>
-                <p className="text-xs text-slate-400">
-                  Additional notes
-                </p>
+                <p className="text-xs text-slate-400">Additional notes</p>
 
                 <p className="mt-1 text-sm font-medium">
-                  {latestHistory.additional_notes ||
-                    "No notes"}
+                  {latestHistory.additional_notes || "No notes"}
                 </p>
               </div>
             </div>
@@ -1114,10 +1127,7 @@ export default function NewConsultationPage() {
           {!consultationStarted ? (
             <div className="rounded-2xl border-2 border-dashed p-8 md:p-10 text-center">
               <div className="mx-auto w-16 h-16 rounded-full bg-slate-100 grid place-items-center">
-                <Icon
-                  name="mic"
-                  size={28}
-                />
+                <Icon name="mic" size={28} />
               </div>
 
               <h3 className="mt-5 text-xl font-bold">
@@ -1125,21 +1135,17 @@ export default function NewConsultationPage() {
               </h3>
 
               <p className="mt-2 text-sm text-slate-500 max-w-lg mx-auto">
-                Start the consultation when the patient is with you.
-                The appointment will move from waiting to in consultation.
+                Start the consultation when the patient is with you. The
+                appointment will move from waiting to in consultation.
               </p>
 
               <button
                 type="button"
                 disabled={starting}
-                onClick={
-                  handleStartConsultation
-                }
+                onClick={handleStartConsultation}
                 className="mt-6 rounded-xl bg-slate-950 px-6 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {starting
-                  ? "Starting consultation..."
-                  : "Start consultation"}
+                {starting ? "Starting consultation..." : "Start consultation"}
               </button>
             </div>
           ) : (
@@ -1149,38 +1155,25 @@ export default function NewConsultationPage() {
               <div className="rounded-xl bg-slate-50 p-5">
                 <div className="grid gap-5 sm:grid-cols-3">
                   <div>
-                    <p className="text-xs text-slate-400">
-                      Consultation ID
-                    </p>
+                    <p className="text-xs text-slate-400">Consultation ID</p>
 
-                    <p className="mt-1 font-semibold">
-                      #{consultation.id}
-                    </p>
+                    <p className="mt-1 font-semibold">#{consultation.id}</p>
                   </div>
 
                   <div>
-                    <p className="text-xs text-slate-400">
-                      Status
-                    </p>
+                    <p className="text-xs text-slate-400">Status</p>
 
                     <p className="mt-1 font-semibold capitalize">
-                      {consultation.status?.replaceAll(
-                        "_",
-                        " ",
-                      )}
+                      {consultation.status?.replaceAll("_", " ")}
                     </p>
                   </div>
 
                   <div>
-                    <p className="text-xs text-slate-400">
-                      Started
-                    </p>
+                    <p className="text-xs text-slate-400">Started</p>
 
                     <p className="mt-1 font-semibold">
                       {consultation.started_at
-                        ? new Date(
-                            consultation.started_at,
-                          ).toLocaleString()
+                        ? new Date(consultation.started_at).toLocaleString()
                         : "—"}
                     </p>
                   </div>
@@ -1191,20 +1184,13 @@ export default function NewConsultationPage() {
 
               <div className="mt-6 rounded-2xl border-2 border-dashed p-8 md:p-10 text-center">
                 <div className="mx-auto w-16 h-16 rounded-full bg-slate-100 grid place-items-center">
-                  <Icon
-                    name="mic"
-                    size={28}
-                  />
+                  <Icon name="mic" size={28} />
                 </div>
 
                 <div className="mt-5 flex justify-center">
                   <Badge
                     tone={
-                      isRecording
-                        ? "red"
-                        : uploadedRecording
-                          ? "green"
-                          : "blue"
+                      isRecording ? "red" : uploadedRecording ? "green" : "blue"
                     }
                   >
                     {isRecording
@@ -1222,34 +1208,27 @@ export default function NewConsultationPage() {
                 </h3>
 
                 <p className="mt-2 text-sm text-slate-500 max-w-lg mx-auto">
-                  Record the doctor and patient conversation.
-                  The audio will be saved against this consultation.
+                  Record the doctor and patient conversation. The audio will be
+                  saved against this consultation.
                 </p>
 
-                {(isRecording ||
-                  recordingSeconds > 0) && (
+                {(isRecording || recordingSeconds > 0) && (
                   <div className="mt-6 text-3xl font-bold tabular-nums">
-                    {formatDuration(
-                      recordingSeconds,
-                    )}
+                    {formatDuration(recordingSeconds)}
                   </div>
                 )}
 
                 {/* START */}
 
-                {!isRecording &&
-                  !audioBlob &&
-                  !uploadedRecording && (
-                    <button
-                      type="button"
-                      onClick={
-                        handleStartRecording
-                      }
-                      className="mt-6 rounded-xl bg-slate-950 px-6 py-3 text-sm font-semibold text-white"
-                    >
-                      Start recording
-                    </button>
-                  )}
+                {!isRecording && !audioBlob && !uploadedRecording && (
+                  <button
+                    type="button"
+                    onClick={handleStartRecording}
+                    className="mt-6 rounded-xl bg-slate-950 px-6 py-3 text-sm font-semibold text-white"
+                  >
+                    Start recording
+                  </button>
+                )}
 
                 {/* CONTROLS */}
 
@@ -1258,9 +1237,7 @@ export default function NewConsultationPage() {
                     {!isPaused ? (
                       <button
                         type="button"
-                        onClick={
-                          handlePauseRecording
-                        }
+                        onClick={handlePauseRecording}
                         className="rounded-xl border px-5 py-3 text-sm font-semibold"
                       >
                         Pause
@@ -1268,9 +1245,7 @@ export default function NewConsultationPage() {
                     ) : (
                       <button
                         type="button"
-                        onClick={
-                          handleResumeRecording
-                        }
+                        onClick={handleResumeRecording}
                         className="rounded-xl border px-5 py-3 text-sm font-semibold"
                       >
                         Resume
@@ -1279,9 +1254,7 @@ export default function NewConsultationPage() {
 
                     <button
                       type="button"
-                      onClick={
-                        handleStopRecording
-                      }
+                      onClick={handleStopRecording}
                       className="rounded-xl bg-red-600 px-5 py-3 text-sm font-semibold text-white"
                     >
                       Stop recording
@@ -1291,51 +1264,37 @@ export default function NewConsultationPage() {
 
                 {/* PREVIEW */}
 
-                {audioBlob &&
-                  !uploadedRecording &&
-                  !isRecording && (
-                    <div className="mt-7">
-                      <p className="text-sm font-medium">
-                        Recording complete
-                      </p>
+                {audioBlob && !uploadedRecording && !isRecording && (
+                  <div className="mt-7">
+                    <p className="text-sm font-medium">Recording complete</p>
 
-                      <audio
-                        controls
-                        src={audioUrl}
-                        className="mx-auto mt-4 w-full max-w-lg"
-                      />
+                    <audio
+                      controls
+                      src={audioUrl}
+                      className="mx-auto mt-4 w-full max-w-lg"
+                    />
 
-                      <div className="mt-5 flex flex-wrap justify-center gap-3">
-                        <button
-                          type="button"
-                          disabled={
-                            uploadingAudio
-                          }
-                          onClick={
-                            handleUploadAudio
-                          }
-                          className="rounded-xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white disabled:opacity-50"
-                        >
-                          {uploadingAudio
-                            ? "Saving audio..."
-                            : "Save recording"}
-                        </button>
+                    <div className="mt-5 flex flex-wrap justify-center gap-3">
+                      <button
+                        type="button"
+                        disabled={uploadingAudio}
+                        onClick={handleUploadAudio}
+                        className="rounded-xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white disabled:opacity-50"
+                      >
+                        {uploadingAudio ? "Saving audio..." : "Save recording"}
+                      </button>
 
-                        <button
-                          type="button"
-                          disabled={
-                            uploadingAudio
-                          }
-                          onClick={
-                            handleRecordAgain
-                          }
-                          className="rounded-xl border px-5 py-3 text-sm font-semibold disabled:opacity-50"
-                        >
-                          Record again
-                        </button>
-                      </div>
+                      <button
+                        type="button"
+                        disabled={uploadingAudio}
+                        onClick={handleRecordAgain}
+                        className="rounded-xl border px-5 py-3 text-sm font-semibold disabled:opacity-50"
+                      >
+                        Record again
+                      </button>
                     </div>
-                  )}
+                  </div>
+                )}
 
                 {/* UPLOADED */}
 
@@ -1348,21 +1307,16 @@ export default function NewConsultationPage() {
                         </p>
 
                         <p className="mt-1 text-xs text-emerald-700">
-                          Audio recording #
-                          {uploadedRecording.id}
+                          Audio recording #{uploadedRecording.id}
                         </p>
                       </div>
 
-                      <Badge tone="green">
-                        Uploaded
-                      </Badge>
+                      <Badge tone="green">Uploaded</Badge>
                     </div>
 
                     <div className="mt-4 grid gap-4 sm:grid-cols-3">
                       <div>
-                        <p className="text-xs text-emerald-700">
-                          Duration
-                        </p>
+                        <p className="text-xs text-emerald-700">Duration</p>
 
                         <p className="mt-1 text-sm font-semibold">
                           {formatDuration(
@@ -1377,20 +1331,15 @@ export default function NewConsultationPage() {
                       </div>
 
                       <div>
-                        <p className="text-xs text-emerald-700">
-                          File type
-                        </p>
+                        <p className="text-xs text-emerald-700">File type</p>
 
                         <p className="mt-1 text-sm font-semibold">
-                          {uploadedRecording.mime_type ||
-                            "Audio"}
+                          {uploadedRecording.mime_type || "Audio"}
                         </p>
                       </div>
 
                       <div>
-                        <p className="text-xs text-emerald-700">
-                          Status
-                        </p>
+                        <p className="text-xs text-emerald-700">Status</p>
 
                         <p className="mt-1 text-sm font-semibold capitalize">
                           {uploadedRecording.status}
@@ -1401,9 +1350,7 @@ export default function NewConsultationPage() {
                     {uploadedRecording.storage_key && (
                       <audio
                         controls
-                        src={
-                          uploadedRecording.storage_key
-                        }
+                        src={uploadedRecording.storage_key}
                         className="mt-5 w-full"
                       />
                     )}
@@ -1415,9 +1362,7 @@ export default function NewConsultationPage() {
                         <button
                           type="button"
                           disabled={transcribing}
-                          onClick={
-                            handleGenerateTranscript
-                          }
+                          onClick={handleGenerateTranscript}
                           className="rounded-xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           {transcribing
@@ -1427,7 +1372,8 @@ export default function NewConsultationPage() {
 
                         {transcribing && (
                           <p className="mt-3 text-xs text-slate-500">
-                            Audio is being processed. Please keep this page open.
+                            Audio is being processed. Please keep this page
+                            open.
                           </p>
                         )}
                       </div>
@@ -1444,18 +1390,14 @@ export default function NewConsultationPage() {
                 <section className="mt-6 rounded-2xl border overflow-hidden">
                   <div className="p-5 border-b flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div>
-                      <h3 className="font-semibold">
-                        AI transcript
-                      </h3>
+                      <h3 className="font-semibold">AI transcript</h3>
 
                       <p className="mt-1 text-xs text-slate-500">
                         Generated from consultation recording
                       </p>
                     </div>
 
-                    <Badge tone="green">
-                      Transcript ready
-                    </Badge>
+                    <Badge tone="green">Transcript ready</Badge>
                   </div>
 
                   <div className="p-5">
@@ -1468,16 +1410,12 @@ export default function NewConsultationPage() {
                     </div>
 
                     <div className="mt-5 flex flex-wrap gap-5 text-xs text-slate-400">
-                      <span>
-                        Transcript #{transcript.id}
-                      </span>
+                      <span>Transcript #{transcript.id}</span>
 
-                      {transcript.word_count !==
-                        null && (
-                        <span>
-                          {transcript.word_count} words
-                        </span>
-                      )}
+                      {transcript.word_count !== null &&
+                        transcript.word_count !== undefined && (
+                          <span>{transcript.word_count} words</span>
+                        )}
 
                       <span className="capitalize">
                         Status: {transcript.status}
@@ -1495,33 +1433,21 @@ export default function NewConsultationPage() {
 
           <div className="mt-6 grid md:grid-cols-3 gap-3">
             <div className="rounded-xl bg-slate-50 p-4">
-              <div className="text-xs text-slate-400">
-                01
-              </div>
+              <div className="text-xs text-slate-400">01</div>
 
-              <div className="mt-2 font-semibold">
-                Patient history
-              </div>
+              <div className="mt-2 font-semibold">Patient history</div>
 
-              <div className="mt-1 text-xs text-emerald-600">
-                Available
-              </div>
+              <div className="mt-1 text-xs text-emerald-600">Available</div>
             </div>
 
             <div className="rounded-xl bg-slate-50 p-4">
-              <div className="text-xs text-slate-400">
-                02
-              </div>
+              <div className="text-xs text-slate-400">02</div>
 
-              <div className="mt-2 font-semibold">
-                Audio recording
-              </div>
+              <div className="mt-2 font-semibold">Audio recording</div>
 
               <div
                 className={`mt-1 text-xs ${
-                  uploadedRecording
-                    ? "text-emerald-600"
-                    : "text-slate-500"
+                  uploadedRecording ? "text-emerald-600" : "text-slate-500"
                 }`}
               >
                 {uploadedRecording
@@ -1533,13 +1459,9 @@ export default function NewConsultationPage() {
             </div>
 
             <div className="rounded-xl bg-slate-50 p-4">
-              <div className="text-xs text-slate-400">
-                03
-              </div>
+              <div className="text-xs text-slate-400">03</div>
 
-              <div className="mt-2 font-semibold">
-                AI transcript
-              </div>
+              <div className="mt-2 font-semibold">AI transcript</div>
 
               <div
                 className={`mt-1 text-xs ${
@@ -1562,7 +1484,9 @@ export default function NewConsultationPage() {
           </div>
         </section>
 
-        {/* BACK */}
+        {/* =========================
+            BACK
+        ========================== */}
 
         <div className="mt-6">
           <Link
