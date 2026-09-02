@@ -3,11 +3,17 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getSession } from "@/lib/auth";
 
+export const dynamic = "force-dynamic";
+
+// ======================================================
+// COMPOUNDER DASHBOARD
+// ======================================================
+
 export async function GET() {
   try {
-    // =========================
+    // ======================================================
     // SESSION
-    // =========================
+    // ======================================================
 
     const session = await getSession();
 
@@ -21,23 +27,23 @@ export async function GET() {
       );
     }
 
-    // =========================
-    // ROLE
-    // =========================
+    // ======================================================
+    // ROLE CHECK
+    // ======================================================
 
     if (session.role !== "compounder") {
       return NextResponse.json(
         {
           success: false,
-          message: "Access denied.",
+          message: "Only compounders can access this dashboard.",
         },
         { status: 403 },
       );
     }
 
-    // =========================
-    // COMPOUNDER DATA
-    // =========================
+    // ======================================================
+    // COMPOUNDER ACCOUNT
+    // ======================================================
 
     const compounderResult = await db.query(
       `
@@ -46,12 +52,18 @@ export async function GET() {
         name,
         email,
         phone,
+        profile_picture,
         role,
         is_active,
-        last_login_at
+        last_login_at,
+        created_at,
+        updated_at
+
       FROM users
+
       WHERE id = $1
         AND role = 'compounder'
+
       LIMIT 1
       `,
       [session.userId],
@@ -69,24 +81,99 @@ export async function GET() {
 
     const compounder = compounderResult.rows[0];
 
-    // =========================
+    // ======================================================
+    // ACCOUNT STATUS
+    // ======================================================
+
+    if (!compounder.is_active) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Compounder account is inactive.",
+        },
+        { status: 403 },
+      );
+    }
+
+    // ======================================================
+    // CLINIC DATE
+    // ======================================================
+
+    const clinicDateResult = await db.query(`
+      SELECT
+        (
+          CURRENT_TIMESTAMP
+          AT TIME ZONE 'Asia/Karachi'
+        )::DATE::TEXT AS clinic_date
+    `);
+
+    const clinicDate = clinicDateResult.rows[0]?.clinic_date || null;
+
+    // ======================================================
     // TOTAL PATIENTS
-    // =========================
+    // ======================================================
 
     const totalPatientsResult = await db.query(`
-      SELECT COUNT(*)::INTEGER AS total
+      SELECT
+        COUNT(*)::INTEGER AS total
+
       FROM patients
     `);
 
     const totalPatients = totalPatientsResult.rows[0]?.total || 0;
 
-    // =========================
-    // TODAY STATS
-    // =========================
+    // ======================================================
+    // ACTIVE QUEUE STATS
+    //
+    // TODAY + FUTURE
+    //
+    // These numbers correspond directly to dashboard queue.
+    // ======================================================
 
-    const statsResult = await db.query(`
+    const activeStatsResult = await db.query(`
       SELECT
+        COUNT(*)::INTEGER AS total,
 
+        COUNT(*) FILTER (
+          WHERE status = 'scheduled'
+        )::INTEGER AS scheduled,
+
+        COUNT(*) FILTER (
+          WHERE status = 'checked_in'
+        )::INTEGER AS checked_in,
+
+        COUNT(*) FILTER (
+          WHERE status = 'waiting'
+        )::INTEGER AS waiting,
+
+        COUNT(*) FILTER (
+          WHERE status = 'in_consultation'
+        )::INTEGER AS in_consultation
+
+      FROM appointments
+
+      WHERE appointment_date >=
+        (
+          CURRENT_TIMESTAMP
+          AT TIME ZONE 'Asia/Karachi'
+        )::DATE
+
+        AND status IN (
+          'scheduled',
+          'checked_in',
+          'waiting',
+          'in_consultation'
+        )
+    `);
+
+    const activeStats = activeStatsResult.rows[0] || {};
+
+    // ======================================================
+    // TODAY STATS
+    // ======================================================
+
+    const todayStatsResult = await db.query(`
+      SELECT
         COUNT(*)::INTEGER AS total,
 
         COUNT(*) FILTER (
@@ -119,30 +206,89 @@ export async function GET() {
 
       FROM appointments
 
-      WHERE appointment_date = CURRENT_DATE
+      WHERE appointment_date =
+        (
+          CURRENT_TIMESTAMP
+          AT TIME ZONE 'Asia/Karachi'
+        )::DATE
     `);
 
-    const stats = statsResult.rows[0];
+    const todayStats = todayStatsResult.rows[0] || {};
 
-    // =========================
-    // TODAY QUEUE
-    // =========================
+    // ======================================================
+    // UPCOMING COUNT
+    // FUTURE ONLY
+    // ======================================================
+
+    const upcomingCountResult = await db.query(`
+      SELECT
+        COUNT(*)::INTEGER AS total
+
+      FROM appointments
+
+      WHERE appointment_date >
+        (
+          CURRENT_TIMESTAMP
+          AT TIME ZONE 'Asia/Karachi'
+        )::DATE
+
+        AND status IN (
+          'scheduled',
+          'checked_in',
+          'waiting',
+          'in_consultation'
+        )
+    `);
+
+    const upcomingCount = upcomingCountResult.rows[0]?.total || 0;
+
+    // ======================================================
+    // ACTIVE QUEUE
+    //
+    // TODAY + FUTURE
+    // ======================================================
 
     const queueResult = await db.query(`
       SELECT
         a.id,
         a.patient_id,
         a.doctor_id,
-        a.appointment_date,
-        a.appointment_time,
+
+        a.appointment_date::TEXT
+          AS appointment_date,
+
+        a.appointment_time::TEXT
+          AS appointment_time,
+
         a.token_number,
         a.status,
         a.notes,
+        a.created_at,
+        a.updated_at,
 
-        p.name AS patient_name,
+        p.name
+          AS patient_name,
+
         p.patient_code,
 
-        d.name AS doctor_name
+        p.phone
+          AS patient_phone,
+
+        p.gender,
+        p.date_of_birth,
+
+        d.name
+          AS doctor_name,
+
+        CASE
+          WHEN a.appointment_date =
+            (
+              CURRENT_TIMESTAMP
+              AT TIME ZONE 'Asia/Karachi'
+            )::DATE
+          THEN TRUE
+          ELSE FALSE
+        END AS is_today
 
       FROM appointments a
 
@@ -151,56 +297,167 @@ export async function GET() {
 
       INNER JOIN users d
         ON d.id = a.doctor_id
+        AND d.role = 'doctor'
+        AND d.is_active = TRUE
 
-      WHERE a.appointment_date = CURRENT_DATE
+      WHERE a.appointment_date >=
+        (
+          CURRENT_TIMESTAMP
+          AT TIME ZONE 'Asia/Karachi'
+        )::DATE
+
+        AND a.status IN (
+          'scheduled',
+          'checked_in',
+          'waiting',
+          'in_consultation'
+        )
 
       ORDER BY
+
+        a.appointment_date ASC,
+
         CASE a.status
           WHEN 'in_consultation' THEN 1
           WHEN 'waiting' THEN 2
           WHEN 'checked_in' THEN 3
           WHEN 'scheduled' THEN 4
-          WHEN 'completed' THEN 5
-          WHEN 'cancelled' THEN 6
-          WHEN 'no_show' THEN 7
-          ELSE 8
+          ELSE 5
         END,
+
         a.appointment_time ASC
     `);
 
-    // =========================
+    // ======================================================
+    // UPCOMING APPOINTMENTS
+    //
+    // FUTURE ONLY
+    // ======================================================
+
+    const upcomingResult = await db.query(`
+      SELECT
+        a.id,
+        a.patient_id,
+        a.doctor_id,
+
+        a.appointment_date::TEXT
+          AS appointment_date,
+
+        a.appointment_time::TEXT
+          AS appointment_time,
+
+        a.token_number,
+        a.status,
+        a.notes,
+        a.created_at,
+        a.updated_at,
+
+        p.name
+          AS patient_name,
+
+        p.patient_code,
+
+        p.phone
+          AS patient_phone,
+
+        p.gender,
+        p.date_of_birth,
+
+        d.name
+          AS doctor_name
+
+      FROM appointments a
+
+      INNER JOIN patients p
+        ON p.id = a.patient_id
+
+      INNER JOIN users d
+        ON d.id = a.doctor_id
+        AND d.role = 'doctor'
+        AND d.is_active = TRUE
+
+      WHERE a.appointment_date >
+        (
+          CURRENT_TIMESTAMP
+          AT TIME ZONE 'Asia/Karachi'
+        )::DATE
+
+        AND a.status IN (
+          'scheduled',
+          'checked_in',
+          'waiting',
+          'in_consultation'
+        )
+
+      ORDER BY
+        a.appointment_date ASC,
+        a.appointment_time ASC
+    `);
+
+    // ======================================================
     // RESPONSE
-    // =========================
+    // ======================================================
 
     return NextResponse.json(
       {
         success: true,
 
+        clinic_date: clinicDate,
+
         compounder,
 
         stats: {
+          // ALL PATIENTS
           total_patients: totalPatients,
 
-          today_appointments: stats.total || 0,
+          // ACTIVE TODAY + FUTURE
+          active_appointments: activeStats.total || 0,
 
-          scheduled: stats.scheduled || 0,
+          scheduled: activeStats.scheduled || 0,
 
-          checked_in: stats.checked_in || 0,
+          checked_in: activeStats.checked_in || 0,
 
-          waiting: stats.waiting || 0,
+          waiting: activeStats.waiting || 0,
 
-          in_consultation: stats.in_consultation || 0,
+          in_consultation: activeStats.in_consultation || 0,
 
-          completed: stats.completed || 0,
+          total_queue: activeStats.total || 0,
 
-          cancelled: stats.cancelled || 0,
+          // TODAY ONLY
+          today_appointments: todayStats.total || 0,
 
-          no_show: stats.no_show || 0,
+          today_scheduled: todayStats.scheduled || 0,
+
+          today_checked_in: todayStats.checked_in || 0,
+
+          today_waiting: todayStats.waiting || 0,
+
+          today_in_consultation: todayStats.in_consultation || 0,
+
+          completed: todayStats.completed || 0,
+
+          cancelled: todayStats.cancelled || 0,
+
+          no_show: todayStats.no_show || 0,
+
+          // FUTURE ONLY
+          upcoming_appointments: upcomingCount,
         },
 
+        // TODAY + FUTURE ACTIVE
         queue: queueResult.rows,
+
+        // FUTURE ONLY
+        upcoming_appointments: upcomingResult.rows,
       },
-      { status: 200 },
+      {
+        status: 200,
+
+        headers: {
+          "Cache-Control":
+            "no-store, no-cache, must-revalidate, proxy-revalidate",
+        },
+      },
     );
   } catch (error) {
     console.error("COMPOUNDER DASHBOARD ERROR:", error);
@@ -208,8 +465,11 @@ export async function GET() {
     return NextResponse.json(
       {
         success: false,
+
         message: "Unable to load compounder dashboard.",
-        error: error.message,
+
+        error:
+          process.env.NODE_ENV === "development" ? error.message : undefined,
       },
       { status: 500 },
     );
