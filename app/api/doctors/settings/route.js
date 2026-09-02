@@ -1,9 +1,42 @@
 import { NextResponse } from "next/server";
 
 import { db } from "@/lib/db";
+
 import { getSession } from "@/lib/auth";
 
+import { getPrivateFileUrl } from "@/lib/s3";
+
 export const dynamic = "force-dynamic";
+
+// ======================================================
+// PREPARE DOCTOR RESPONSE
+// ======================================================
+
+async function prepareDoctorResponse(doctor) {
+  if (!doctor) {
+    return null;
+  }
+
+  let profilePictureUrl = null;
+
+  if (doctor.profile_picture) {
+    try {
+      profilePictureUrl = await getPrivateFileUrl(doctor.profile_picture, 3600);
+    } catch (error) {
+      console.error("DOCTOR PROFILE SIGNED URL ERROR:", error);
+    }
+  }
+
+  return {
+    ...doctor,
+
+    // Permanent S3 key stored in database
+    profile_picture_key: doctor.profile_picture || null,
+
+    // Temporary URL for frontend
+    profile_picture: profilePictureUrl,
+  };
+}
 
 // ======================================================
 // GET DOCTOR SETTINGS
@@ -11,6 +44,10 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
+    // =========================
+    // SESSION
+    // =========================
+
     const session = await getSession();
 
     if (!session) {
@@ -23,6 +60,10 @@ export async function GET() {
       );
     }
 
+    // =========================
+    // ROLE
+    // =========================
+
     if (session.role !== "doctor") {
       return NextResponse.json(
         {
@@ -32,6 +73,10 @@ export async function GET() {
         { status: 403 },
       );
     }
+
+    // =========================
+    // DOCTOR
+    // =========================
 
     const result = await db.query(
       `
@@ -57,6 +102,10 @@ export async function GET() {
       [session.userId],
     );
 
+    // =========================
+    // NOT FOUND
+    // =========================
+
     if (result.rows.length === 0) {
       return NextResponse.json(
         {
@@ -69,6 +118,10 @@ export async function GET() {
 
     const doctor = result.rows[0];
 
+    // =========================
+    // ACTIVE CHECK
+    // =========================
+
     if (!doctor.is_active) {
       return NextResponse.json(
         {
@@ -79,12 +132,29 @@ export async function GET() {
       );
     }
 
+    // =========================
+    // PREPARE PROFILE IMAGE
+    // =========================
+
+    const responseDoctor = await prepareDoctorResponse(doctor);
+
+    // =========================
+    // RESPONSE
+    // =========================
+
     return NextResponse.json(
       {
         success: true,
-        doctor,
+
+        doctor: responseDoctor,
       },
-      { status: 200 },
+      {
+        status: 200,
+
+        headers: {
+          "Cache-Control": "no-store, no-cache, must-revalidate",
+        },
+      },
     );
   } catch (error) {
     console.error("GET DOCTOR SETTINGS ERROR:", error);
@@ -92,7 +162,9 @@ export async function GET() {
     return NextResponse.json(
       {
         success: false,
+
         message: "Unable to load doctor settings.",
+
         error:
           process.env.NODE_ENV === "development" ? error.message : undefined,
       },
@@ -103,11 +175,16 @@ export async function GET() {
 
 // ======================================================
 // PATCH DOCTOR PROFILE
-// Doctor can update phone only
+//
+// Doctor can currently update phone only.
 // ======================================================
 
 export async function PATCH(request) {
   try {
+    // =========================
+    // SESSION
+    // =========================
+
     const session = await getSession();
 
     if (!session) {
@@ -120,6 +197,10 @@ export async function PATCH(request) {
       );
     }
 
+    // =========================
+    // ROLE
+    // =========================
+
     if (session.role !== "doctor") {
       return NextResponse.json(
         {
@@ -130,10 +211,30 @@ export async function PATCH(request) {
       );
     }
 
-    const body = await request.json();
+    // =========================
+    // BODY
+    // =========================
+
+    let body;
+
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Invalid request body.",
+        },
+        { status: 400 },
+      );
+    }
 
     const phone =
       typeof body.phone === "string" ? body.phone.trim() || null : null;
+
+    // =========================
+    // PHONE VALIDATION
+    // =========================
 
     if (phone && phone.length > 30) {
       return NextResponse.json(
@@ -155,12 +256,23 @@ export async function PATCH(request) {
       );
     }
 
+    // =========================
+    // CURRENT DOCTOR
+    // =========================
+
     const existingResult = await db.query(
       `
         SELECT
           id,
+          name,
+          email,
           phone,
-          is_active
+          profile_picture,
+          role,
+          is_active,
+          last_login_at,
+          created_at,
+          updated_at
 
         FROM users
 
@@ -184,6 +296,10 @@ export async function PATCH(request) {
 
     const existingDoctor = existingResult.rows[0];
 
+    // =========================
+    // ACTIVE CHECK
+    // =========================
+
     if (!existingDoctor.is_active) {
       return NextResponse.json(
         {
@@ -194,40 +310,28 @@ export async function PATCH(request) {
       );
     }
 
+    // =========================
+    // NO CHANGES
+    // =========================
+
     if ((existingDoctor.phone || null) === phone) {
-      const currentDoctorResult = await db.query(
-        `
-          SELECT
-            id,
-            name,
-            email,
-            phone,
-            profile_picture,
-            role,
-            is_active,
-            last_login_at,
-            created_at,
-            updated_at
-
-          FROM users
-
-          WHERE id = $1
-            AND role = 'doctor'
-
-          LIMIT 1
-          `,
-        [session.userId],
-      );
+      const responseDoctor = await prepareDoctorResponse(existingDoctor);
 
       return NextResponse.json(
         {
           success: true,
+
           message: "No profile changes detected.",
-          doctor: currentDoctorResult.rows[0],
+
+          doctor: responseDoctor,
         },
         { status: 200 },
       );
     }
+
+    // =========================
+    // UPDATE
+    // =========================
 
     const result = await db.query(
       `
@@ -235,7 +339,8 @@ export async function PATCH(request) {
 
       SET
         phone = $1,
-        updated_at = CURRENT_TIMESTAMP
+        updated_at =
+          CURRENT_TIMESTAMP
 
       WHERE id = $2
         AND role = 'doctor'
@@ -255,7 +360,21 @@ export async function PATCH(request) {
       [phone, session.userId],
     );
 
+    if (result.rows.length === 0) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Doctor account not found.",
+        },
+        { status: 404 },
+      );
+    }
+
     const doctor = result.rows[0];
+
+    // =========================
+    // AUDIT LOG
+    // =========================
 
     try {
       await db.query(
@@ -278,12 +397,18 @@ export async function PATCH(request) {
         `,
         [
           session.userId,
+
           "UPDATE_DOCTOR_PROFILE",
+
           "user",
+
           session.userId,
+
           JSON.stringify({
             updated_fields: ["phone"],
+
             old_phone: existingDoctor.phone,
+
             new_phone: doctor.phone,
           }),
         ],
@@ -292,13 +417,31 @@ export async function PATCH(request) {
       console.error("DOCTOR SETTINGS AUDIT ERROR:", auditError);
     }
 
+    // =========================
+    // SIGNED PROFILE URL
+    // =========================
+
+    const responseDoctor = await prepareDoctorResponse(doctor);
+
+    // =========================
+    // RESPONSE
+    // =========================
+
     return NextResponse.json(
       {
         success: true,
+
         message: "Profile updated successfully.",
-        doctor,
+
+        doctor: responseDoctor,
       },
-      { status: 200 },
+      {
+        status: 200,
+
+        headers: {
+          "Cache-Control": "no-store, no-cache, must-revalidate",
+        },
+      },
     );
   } catch (error) {
     console.error("UPDATE DOCTOR SETTINGS ERROR:", error);
@@ -306,7 +449,9 @@ export async function PATCH(request) {
     return NextResponse.json(
       {
         success: false,
+
         message: "Unable to update profile.",
+
         error:
           process.env.NODE_ENV === "development" ? error.message : undefined,
       },

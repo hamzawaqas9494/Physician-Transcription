@@ -8,7 +8,9 @@
     "start": "next start"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1124.0",
     "@aws-sdk/rds-signer": "^3.1121.0",
+    "@aws-sdk/s3-request-presigner": "^3.1124.0",
     "@neondatabase/serverless": "^1.1.0",
     "@vercel/functions": "^3.9.5",
     "bcryptjs": "^3.0.3",
