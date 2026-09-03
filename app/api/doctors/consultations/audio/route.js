@@ -1037,6 +1037,671 @@
 //   }
 // }
 
+// import { NextResponse } from "next/server";
+// import crypto from "crypto";
+
+// import { db } from "@/lib/db";
+// import { getSession } from "@/lib/auth";
+
+// import { uploadFileToS3, deleteFileFromS3, getPrivateFileUrl } from "@/lib/s3";
+
+// export const runtime = "nodejs";
+// export const dynamic = "force-dynamic";
+
+// // ======================================================
+// // CONFIG
+// // ======================================================
+
+// const MAX_AUDIO_SIZE = 100 * 1024 * 1024; // 100 MB
+
+// const ALLOWED_AUDIO_TYPES = {
+//   "audio/webm": "webm",
+//   "audio/webm;codecs=opus": "webm",
+
+//   "audio/ogg": "ogg",
+//   "audio/ogg;codecs=opus": "ogg",
+
+//   "audio/mp4": "mp4",
+//   "audio/m4a": "m4a",
+//   "audio/x-m4a": "m4a",
+
+//   "audio/mpeg": "mp3",
+//   "audio/mp3": "mp3",
+
+//   "audio/wav": "wav",
+//   "audio/x-wav": "wav",
+// };
+
+// // ======================================================
+// // NORMALIZE MIME TYPE
+// // ======================================================
+
+// function normalizeMimeType(mimeType) {
+//   if (!mimeType || typeof mimeType !== "string") {
+//     return "audio/webm";
+//   }
+
+//   return mimeType.toLowerCase().trim();
+// }
+
+// // ======================================================
+// // GET EXTENSION
+// // ======================================================
+
+// function getAudioExtension(mimeType) {
+//   const normalized = normalizeMimeType(mimeType);
+
+//   // Exact match
+//   if (ALLOWED_AUDIO_TYPES[normalized]) {
+//     return ALLOWED_AUDIO_TYPES[normalized];
+//   }
+
+//   // Browser can return:
+//   // audio/webm;codecs=opus
+//   if (normalized.startsWith("audio/webm")) {
+//     return "webm";
+//   }
+
+//   if (normalized.startsWith("audio/ogg")) {
+//     return "ogg";
+//   }
+
+//   if (normalized.startsWith("audio/mp4")) {
+//     return "mp4";
+//   }
+
+//   if (normalized.startsWith("audio/mpeg")) {
+//     return "mp3";
+//   }
+
+//   if (normalized.startsWith("audio/wav")) {
+//     return "wav";
+//   }
+
+//   if (normalized.startsWith("audio/x-wav")) {
+//     return "wav";
+//   }
+
+//   if (normalized.startsWith("audio/m4a")) {
+//     return "m4a";
+//   }
+
+//   if (normalized.startsWith("audio/x-m4a")) {
+//     return "m4a";
+//   }
+
+//   return null;
+// }
+
+// // ======================================================
+// // SAFE S3 DELETE
+// // ======================================================
+
+// async function safeDeleteFromS3(storageKey) {
+//   if (!storageKey) {
+//     return;
+//   }
+
+//   try {
+//     await deleteFileFromS3(storageKey);
+//   } catch (error) {
+//     console.error("DELETE AUDIO FROM S3 ERROR:", error);
+//   }
+// }
+
+// // ======================================================
+// // POST
+// // /api/doctors/consultations/audio
+// //
+// // Upload consultation audio to AWS S3
+// // ======================================================
+
+// export async function POST(request) {
+//   let uploadedS3Key = null;
+
+//   try {
+//     // ======================================================
+//     // SESSION
+//     // ======================================================
+
+//     const session = await getSession();
+
+//     if (!session) {
+//       return NextResponse.json(
+//         {
+//           success: false,
+//           message: "Unauthorized. Please login.",
+//         },
+//         { status: 401 },
+//       );
+//     }
+
+//     // ======================================================
+//     // ROLE
+//     // ======================================================
+
+//     if (session.role !== "doctor") {
+//       return NextResponse.json(
+//         {
+//           success: false,
+//           message: "Only doctors can upload consultation audio.",
+//         },
+//         { status: 403 },
+//       );
+//     }
+
+//     // ======================================================
+//     // FORM DATA
+//     // ======================================================
+
+//     const formData = await request.formData();
+
+//     const audio = formData.get("audio");
+
+//     const consultationId = Number(formData.get("consultation_id"));
+
+//     const durationValue = Number(formData.get("duration_seconds") || 0);
+
+//     const durationSeconds =
+//       Number.isFinite(durationValue) && durationValue > 0
+//         ? durationValue
+//         : null;
+
+//     // ======================================================
+//     // CONSULTATION ID VALIDATION
+//     // ======================================================
+
+//     if (!Number.isInteger(consultationId) || consultationId <= 0) {
+//       return NextResponse.json(
+//         {
+//           success: false,
+//           message: "Valid consultation ID is required.",
+//         },
+//         { status: 400 },
+//       );
+//     }
+
+//     // ======================================================
+//     // AUDIO VALIDATION
+//     // ======================================================
+
+//     if (!audio || typeof audio === "string") {
+//       return NextResponse.json(
+//         {
+//           success: false,
+//           message: "Audio file is required.",
+//         },
+//         { status: 400 },
+//       );
+//     }
+
+//     if (audio.size <= 0) {
+//       return NextResponse.json(
+//         {
+//           success: false,
+//           message: "The selected audio file is empty.",
+//         },
+//         { status: 400 },
+//       );
+//     }
+
+//     if (audio.size > MAX_AUDIO_SIZE) {
+//       return NextResponse.json(
+//         {
+//           success: false,
+//           message: "Audio file must be 100 MB or smaller.",
+//         },
+//         { status: 400 },
+//       );
+//     }
+
+//     // ======================================================
+//     // MIME TYPE
+//     // ======================================================
+
+//     const mimeType = normalizeMimeType(audio.type || "audio/webm");
+
+//     const extension = getAudioExtension(mimeType);
+
+//     if (!extension) {
+//       return NextResponse.json(
+//         {
+//           success: false,
+//           message:
+//             "Unsupported audio format. Please use WebM, OGG, MP4, M4A, MP3 or WAV.",
+//         },
+//         { status: 400 },
+//       );
+//     }
+
+//     // ======================================================
+//     // CONSULTATION CHECK
+//     //
+//     // IMPORTANT:
+//     // Only columns from your existing consultations table
+//     // are being used here.
+//     // ======================================================
+
+//     const consultationResult = await db.query(
+//       `
+//       SELECT
+//         id,
+//         appointment_id,
+//         patient_id,
+//         doctor_id,
+//         status
+
+//       FROM consultations
+
+//       WHERE id = $1
+
+//       LIMIT 1
+//       `,
+//       [consultationId],
+//     );
+
+//     if (consultationResult.rows.length === 0) {
+//       return NextResponse.json(
+//         {
+//           success: false,
+//           message: "Consultation not found.",
+//         },
+//         { status: 404 },
+//       );
+//     }
+
+//     const consultation = consultationResult.rows[0];
+
+//     // ======================================================
+//     // OWNERSHIP
+//     // ======================================================
+
+//     if (String(consultation.doctor_id) !== String(session.userId)) {
+//       return NextResponse.json(
+//         {
+//           success: false,
+//           message: "This consultation does not belong to you.",
+//         },
+//         { status: 403 },
+//       );
+//     }
+
+//     // ======================================================
+//     // COMPLETED CONSULTATION
+//     // ======================================================
+
+//     if (consultation.status === "completed") {
+//       return NextResponse.json(
+//         {
+//           success: false,
+//           message: "Audio cannot be uploaded to a completed consultation.",
+//         },
+//         { status: 400 },
+//       );
+//     }
+
+//     // ======================================================
+//     // AUDIO BUFFER
+//     // ======================================================
+
+//     const arrayBuffer = await audio.arrayBuffer();
+
+//     const buffer = Buffer.from(arrayBuffer);
+
+//     if (buffer.length <= 0) {
+//       return NextResponse.json(
+//         {
+//           success: false,
+//           message: "The audio file contains no data.",
+//         },
+//         { status: 400 },
+//       );
+//     }
+
+//     // ======================================================
+//     // ORIGINAL FILE NAME
+//     // ======================================================
+
+//     const originalFileName =
+//       typeof audio.name === "string" && audio.name.trim()
+//         ? audio.name.trim()
+//         : `consultation-${consultationId}.${extension}`;
+
+//     // ======================================================
+//     // S3 KEY
+//     //
+//     // Bucket:
+//     // physician-transcription-storage
+//     //
+//     // Structure:
+//     // audio/
+//     //   consultations/
+//     //     consultation-ID/
+//     //       doctor-ID-UUID.webm
+//     // ======================================================
+
+//     const uniqueId = crypto.randomUUID();
+
+//     const storageKey =
+//       `audio/consultations/consultation-${consultationId}/` +
+//       `doctor-${session.userId}-${uniqueId}.${extension}`;
+
+//     // ======================================================
+//     // CHECK EXISTING RECORDING
+//     //
+//     // We keep only the latest recording for this
+//     // consultation in this workflow.
+//     // ======================================================
+
+//     const existingRecordingResult = await db.query(
+//       `
+//       SELECT
+//         id,
+//         storage_key
+
+//       FROM audio_recordings
+
+//       WHERE consultation_id = $1
+
+//       ORDER BY created_at DESC
+
+//       LIMIT 1
+//       `,
+//       [consultationId],
+//     );
+
+//     const existingRecording = existingRecordingResult.rows[0] || null;
+
+//     // ======================================================
+//     // UPLOAD TO AWS S3
+//     // ======================================================
+
+//     await uploadFileToS3({
+//       key: storageKey,
+
+//       buffer,
+
+//       contentType: mimeType,
+
+//       metadata: {
+//         consultation_id: String(consultationId),
+
+//         doctor_id: String(session.userId),
+
+//         patient_id: String(consultation.patient_id),
+
+//         appointment_id: String(consultation.appointment_id),
+
+//         upload_type: "consultation-audio",
+//       },
+//     });
+
+//     uploadedS3Key = storageKey;
+
+//     // ======================================================
+//     // DATABASE TRANSACTION
+//     // ======================================================
+
+//     const client = await db.connect();
+
+//     let recording;
+
+//     try {
+//       await client.query("BEGIN");
+
+//       // ====================================================
+//       // INSERT AUDIO RECORD
+//       //
+//       // Existing columns:
+//       //
+//       // consultation_id
+//       // storage_key
+//       // original_file_name
+//       // mime_type
+//       // file_size
+//       // duration_seconds
+//       // status
+//       // ====================================================
+
+//       const audioResult = await client.query(
+//         `
+//         INSERT INTO audio_recordings (
+//           consultation_id,
+//           storage_key,
+//           original_file_name,
+//           mime_type,
+//           file_size,
+//           duration_seconds,
+//           status
+//         )
+
+//         VALUES (
+//           $1,
+//           $2,
+//           $3,
+//           $4,
+//           $5,
+//           $6,
+//           'uploaded'
+//         )
+
+//         RETURNING
+//           id,
+//           consultation_id,
+//           storage_key,
+//           original_file_name,
+//           mime_type,
+//           file_size,
+//           duration_seconds,
+//           status,
+//           error_message,
+//           created_at,
+//           updated_at
+//         `,
+//         [
+//           consultationId,
+//           storageKey,
+//           originalFileName,
+//           mimeType,
+//           buffer.length,
+//           durationSeconds,
+//         ],
+//       );
+
+//       recording = audioResult.rows[0];
+
+//       // ====================================================
+//       // CONSULTATION STATUS
+//       // ====================================================
+
+//       await client.query(
+//         `
+//         UPDATE consultations
+
+//         SET
+//           status = 'recorded',
+//           updated_at = CURRENT_TIMESTAMP
+
+//         WHERE id = $1
+//           AND doctor_id = $2
+//         `,
+//         [consultationId, session.userId],
+//       );
+
+//       // ====================================================
+//       // AUDIT LOG
+//       // ====================================================
+
+//       try {
+//         await client.query(
+//           `
+//           INSERT INTO audit_logs (
+//             user_id,
+//             action,
+//             entity_type,
+//             entity_id,
+//             details
+//           )
+
+//           VALUES (
+//             $1,
+//             $2,
+//             $3,
+//             $4,
+//             $5
+//           )
+//           `,
+//           [
+//             session.userId,
+
+//             "UPLOAD_CONSULTATION_AUDIO",
+
+//             "audio_recording",
+
+//             recording.id,
+
+//             JSON.stringify({
+//               consultation_id: consultationId,
+
+//               appointment_id: consultation.appointment_id,
+
+//               patient_id: consultation.patient_id,
+
+//               doctor_id: consultation.doctor_id,
+
+//               storage_key: storageKey,
+
+//               original_file_name: originalFileName,
+
+//               mime_type: mimeType,
+
+//               file_size: buffer.length,
+
+//               duration_seconds: durationSeconds,
+
+//               storage_provider: "aws_s3",
+
+//               replaced_audio_recording_id: existingRecording?.id || null,
+
+//               replaced_storage_key: existingRecording?.storage_key || null,
+//             }),
+//           ],
+//         );
+//       } catch (auditError) {
+//         // Audit failure should not fail actual upload
+//         console.error("CONSULTATION AUDIO AUDIT ERROR:", auditError);
+//       }
+
+//       await client.query("COMMIT");
+//     } catch (databaseError) {
+//       try {
+//         await client.query("ROLLBACK");
+//       } catch {}
+
+//       // DB failed, remove newly uploaded S3 object
+//       await safeDeleteFromS3(storageKey);
+
+//       uploadedS3Key = null;
+
+//       throw databaseError;
+//     } finally {
+//       client.release();
+//     }
+
+//     // ======================================================
+//     // NEW RECORD IS NOW VALID
+//     // ======================================================
+
+//     uploadedS3Key = null;
+
+//     // ======================================================
+//     // DELETE OLD RECORDING
+//     //
+//     // DB currently keeps its old record for history,
+//     // therefore DON'T delete its S3 file unless we also
+//     // remove/update that DB row.
+//     //
+//     // This prevents broken historical DB references.
+//     // ======================================================
+
+//     // We intentionally do NOT delete:
+//     //
+//     // existingRecording.storage_key
+//     //
+//     // because the old audio_recordings row still exists.
+
+//     // ======================================================
+//     // SIGNED PRIVATE AUDIO URL
+//     // ======================================================
+
+//     let audioUrl = null;
+
+//     try {
+//       audioUrl = await getPrivateFileUrl(recording.storage_key, 60 * 60);
+//     } catch (signedUrlError) {
+//       console.error("GENERATE AUDIO SIGNED URL ERROR:", signedUrlError);
+//     }
+
+//     // ======================================================
+//     // RESPONSE
+//     // ======================================================
+
+//     return NextResponse.json(
+//       {
+//         success: true,
+
+//         message: "Audio uploaded successfully.",
+
+//         audio_recording: {
+//           ...recording,
+
+//           // Temporary signed URL for <audio src="">
+//           audio_url: audioUrl,
+//         },
+//       },
+//       {
+//         status: 201,
+
+//         headers: {
+//           "Cache-Control": "no-store",
+//         },
+//       },
+//     );
+//   } catch (error) {
+//     console.error("UPLOAD CONSULTATION AUDIO ERROR:", error);
+
+//     // ======================================================
+//     // EMERGENCY S3 CLEANUP
+//     // ======================================================
+
+//     if (uploadedS3Key) {
+//       await safeDeleteFromS3(uploadedS3Key);
+//     }
+
+//     // ======================================================
+//     // RESPONSE
+//     // ======================================================
+
+//     return NextResponse.json(
+//       {
+//         success: false,
+
+//         message: "Unable to upload consultation audio.",
+
+//         error:
+//           process.env.NODE_ENV === "development" ? error.message : undefined,
+//       },
+//       {
+//         status: 500,
+
+//         headers: {
+//           "Cache-Control": "no-store",
+//         },
+//       },
+//     );
+//   }
+// }
+
 import { NextResponse } from "next/server";
 import crypto from "crypto";
 
@@ -1062,6 +1727,7 @@ const ALLOWED_AUDIO_TYPES = {
   "audio/ogg;codecs=opus": "ogg",
 
   "audio/mp4": "mp4",
+
   "audio/m4a": "m4a",
   "audio/x-m4a": "m4a",
 
@@ -1071,6 +1737,16 @@ const ALLOWED_AUDIO_TYPES = {
   "audio/wav": "wav",
   "audio/x-wav": "wav",
 };
+
+// ======================================================
+// RESPONSE HEADERS
+// ======================================================
+
+function noStoreHeaders() {
+  return {
+    "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+  };
+}
 
 // ======================================================
 // NORMALIZE MIME TYPE
@@ -1085,19 +1761,30 @@ function normalizeMimeType(mimeType) {
 }
 
 // ======================================================
-// GET EXTENSION
+// S3 CONTENT TYPE
+//
+// Browser may give:
+// audio/webm;codecs=opus
+//
+// For S3 we store:
+// audio/webm
+// ======================================================
+
+function getStorageContentType(mimeType) {
+  return normalizeMimeType(mimeType).split(";")[0].trim();
+}
+
+// ======================================================
+// GET AUDIO EXTENSION
 // ======================================================
 
 function getAudioExtension(mimeType) {
   const normalized = normalizeMimeType(mimeType);
 
-  // Exact match
   if (ALLOWED_AUDIO_TYPES[normalized]) {
     return ALLOWED_AUDIO_TYPES[normalized];
   }
 
-  // Browser can return:
-  // audio/webm;codecs=opus
   if (normalized.startsWith("audio/webm")) {
     return "webm";
   }
@@ -1111,6 +1798,10 @@ function getAudioExtension(mimeType) {
   }
 
   if (normalized.startsWith("audio/mpeg")) {
+    return "mp3";
+  }
+
+  if (normalized.startsWith("audio/mp3")) {
     return "mp3";
   }
 
@@ -1139,21 +1830,94 @@ function getAudioExtension(mimeType) {
 
 async function safeDeleteFromS3(storageKey) {
   if (!storageKey) {
-    return;
+    return false;
   }
 
   try {
     await deleteFileFromS3(storageKey);
+
+    return true;
   } catch (error) {
     console.error("DELETE AUDIO FROM S3 ERROR:", error);
+
+    return false;
   }
+}
+
+// ======================================================
+// ACTIVE DOCTOR CHECK
+// ======================================================
+
+async function getActiveDoctor(userId) {
+  const result = await db.query(
+    `
+    SELECT
+      id,
+      role,
+      is_active
+
+    FROM users
+
+    WHERE id = $1
+      AND role = 'doctor'
+
+    LIMIT 1
+    `,
+    [userId],
+  );
+
+  if (result.rows.length === 0) {
+    return {
+      doctor: null,
+      reason: "not_found",
+    };
+  }
+
+  const doctor = result.rows[0];
+
+  if (!doctor.is_active) {
+    return {
+      doctor,
+      reason: "inactive",
+    };
+  }
+
+  return {
+    doctor,
+    reason: null,
+  };
+}
+
+// ======================================================
+// SIGN AUDIO RECORDING
+// ======================================================
+
+async function addSignedAudioUrl(recording) {
+  if (!recording) {
+    return null;
+  }
+
+  let audioUrl = null;
+
+  if (recording.storage_key) {
+    try {
+      audioUrl = await getPrivateFileUrl(recording.storage_key, 60 * 60);
+    } catch (error) {
+      console.error("GENERATE AUDIO SIGNED URL ERROR:", error);
+    }
+  }
+
+  return {
+    ...recording,
+    audio_url: audioUrl,
+  };
 }
 
 // ======================================================
 // POST
 // /api/doctors/consultations/audio
 //
-// Upload consultation audio to AWS S3
+// UPLOAD CONSULTATION AUDIO TO AWS S3
 // ======================================================
 
 export async function POST(request) {
@@ -1172,7 +1936,10 @@ export async function POST(request) {
           success: false,
           message: "Unauthorized. Please login.",
         },
-        { status: 401 },
+        {
+          status: 401,
+          headers: noStoreHeaders(),
+        },
       );
     }
 
@@ -1186,7 +1953,44 @@ export async function POST(request) {
           success: false,
           message: "Only doctors can upload consultation audio.",
         },
-        { status: 403 },
+        {
+          status: 403,
+          headers: noStoreHeaders(),
+        },
+      );
+    }
+
+    // ======================================================
+    // ACTIVE DOCTOR
+    // ======================================================
+
+    const { doctor, reason: doctorReason } = await getActiveDoctor(
+      session.userId,
+    );
+
+    if (doctorReason === "not_found") {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Doctor account not found.",
+        },
+        {
+          status: 404,
+          headers: noStoreHeaders(),
+        },
+      );
+    }
+
+    if (doctorReason === "inactive") {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Doctor account is inactive.",
+        },
+        {
+          status: 403,
+          headers: noStoreHeaders(),
+        },
       );
     }
 
@@ -1194,7 +1998,22 @@ export async function POST(request) {
     // FORM DATA
     // ======================================================
 
-    const formData = await request.formData();
+    let formData;
+
+    try {
+      formData = await request.formData();
+    } catch {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Invalid audio upload request.",
+        },
+        {
+          status: 400,
+          headers: noStoreHeaders(),
+        },
+      );
+    }
 
     const audio = formData.get("audio");
 
@@ -1204,11 +2023,11 @@ export async function POST(request) {
 
     const durationSeconds =
       Number.isFinite(durationValue) && durationValue > 0
-        ? durationValue
+        ? Math.round(durationValue)
         : null;
 
     // ======================================================
-    // CONSULTATION ID VALIDATION
+    // CONSULTATION ID
     // ======================================================
 
     if (!Number.isInteger(consultationId) || consultationId <= 0) {
@@ -1217,12 +2036,15 @@ export async function POST(request) {
           success: false,
           message: "Valid consultation ID is required.",
         },
-        { status: 400 },
+        {
+          status: 400,
+          headers: noStoreHeaders(),
+        },
       );
     }
 
     // ======================================================
-    // AUDIO VALIDATION
+    // AUDIO FILE
     // ======================================================
 
     if (!audio || typeof audio === "string") {
@@ -1231,7 +2053,10 @@ export async function POST(request) {
           success: false,
           message: "Audio file is required.",
         },
-        { status: 400 },
+        {
+          status: 400,
+          headers: noStoreHeaders(),
+        },
       );
     }
 
@@ -1241,7 +2066,10 @@ export async function POST(request) {
           success: false,
           message: "The selected audio file is empty.",
         },
-        { status: 400 },
+        {
+          status: 400,
+          headers: noStoreHeaders(),
+        },
       );
     }
 
@@ -1251,7 +2079,10 @@ export async function POST(request) {
           success: false,
           message: "Audio file must be 100 MB or smaller.",
         },
-        { status: 400 },
+        {
+          status: 400,
+          headers: noStoreHeaders(),
+        },
       );
     }
 
@@ -1259,44 +2090,46 @@ export async function POST(request) {
     // MIME TYPE
     // ======================================================
 
-    const mimeType = normalizeMimeType(audio.type || "audio/webm");
+    const browserMimeType = normalizeMimeType(audio.type || "audio/webm");
 
-    const extension = getAudioExtension(mimeType);
+    const storageContentType = getStorageContentType(browserMimeType);
+
+    const extension = getAudioExtension(browserMimeType);
 
     if (!extension) {
       return NextResponse.json(
         {
           success: false,
+
           message:
             "Unsupported audio format. Please use WebM, OGG, MP4, M4A, MP3 or WAV.",
         },
-        { status: 400 },
+        {
+          status: 400,
+          headers: noStoreHeaders(),
+        },
       );
     }
 
     // ======================================================
-    // CONSULTATION CHECK
-    //
-    // IMPORTANT:
-    // Only columns from your existing consultations table
-    // are being used here.
+    // CONSULTATION
     // ======================================================
 
     const consultationResult = await db.query(
       `
-      SELECT
-        id,
-        appointment_id,
-        patient_id,
-        doctor_id,
-        status
+        SELECT
+          id,
+          appointment_id,
+          patient_id,
+          doctor_id,
+          status
 
-      FROM consultations
+        FROM consultations
 
-      WHERE id = $1
+        WHERE id = $1
 
-      LIMIT 1
-      `,
+        LIMIT 1
+        `,
       [consultationId],
     );
 
@@ -1306,7 +2139,10 @@ export async function POST(request) {
           success: false,
           message: "Consultation not found.",
         },
-        { status: 404 },
+        {
+          status: 404,
+          headers: noStoreHeaders(),
+        },
       );
     }
 
@@ -1316,13 +2152,17 @@ export async function POST(request) {
     // OWNERSHIP
     // ======================================================
 
-    if (String(consultation.doctor_id) !== String(session.userId)) {
+    if (String(consultation.doctor_id) !== String(doctor.id)) {
       return NextResponse.json(
         {
           success: false,
+
           message: "This consultation does not belong to you.",
         },
-        { status: 403 },
+        {
+          status: 403,
+          headers: noStoreHeaders(),
+        },
       );
     }
 
@@ -1334,14 +2174,18 @@ export async function POST(request) {
       return NextResponse.json(
         {
           success: false,
+
           message: "Audio cannot be uploaded to a completed consultation.",
         },
-        { status: 400 },
+        {
+          status: 400,
+          headers: noStoreHeaders(),
+        },
       );
     }
 
     // ======================================================
-    // AUDIO BUFFER
+    // BUFFER
     // ======================================================
 
     const arrayBuffer = await audio.arrayBuffer();
@@ -1352,9 +2196,13 @@ export async function POST(request) {
       return NextResponse.json(
         {
           success: false,
+
           message: "The audio file contains no data.",
         },
-        { status: 400 },
+        {
+          status: 400,
+          headers: noStoreHeaders(),
+        },
       );
     }
 
@@ -1368,52 +2216,46 @@ export async function POST(request) {
         : `consultation-${consultationId}.${extension}`;
 
     // ======================================================
-    // S3 KEY
-    //
-    // Bucket:
-    // physician-transcription-storage
-    //
-    // Structure:
-    // audio/
-    //   consultations/
-    //     consultation-ID/
-    //       doctor-ID-UUID.webm
+    // S3 STORAGE KEY
     // ======================================================
 
     const uniqueId = crypto.randomUUID();
 
     const storageKey =
       `audio/consultations/consultation-${consultationId}/` +
-      `doctor-${session.userId}-${uniqueId}.${extension}`;
+      `doctor-${doctor.id}-${uniqueId}.${extension}`;
 
     // ======================================================
-    // CHECK EXISTING RECORDING
+    // PREVIOUS RECORDING
     //
-    // We keep only the latest recording for this
-    // consultation in this workflow.
+    // We keep historical DB records for now.
     // ======================================================
 
     const existingRecordingResult = await db.query(
       `
-      SELECT
-        id,
-        storage_key
+        SELECT
+          id,
+          storage_key,
+          status,
+          created_at
 
-      FROM audio_recordings
+        FROM audio_recordings
 
-      WHERE consultation_id = $1
+        WHERE consultation_id = $1
 
-      ORDER BY created_at DESC
+        ORDER BY
+          created_at DESC,
+          id DESC
 
-      LIMIT 1
-      `,
+        LIMIT 1
+        `,
       [consultationId],
     );
 
     const existingRecording = existingRecordingResult.rows[0] || null;
 
     // ======================================================
-    // UPLOAD TO AWS S3
+    // UPLOAD S3
     // ======================================================
 
     await uploadFileToS3({
@@ -1421,12 +2263,12 @@ export async function POST(request) {
 
       buffer,
 
-      contentType: mimeType,
+      contentType: storageContentType,
 
       metadata: {
         consultation_id: String(consultationId),
 
-        doctor_id: String(session.userId),
+        doctor_id: String(doctor.id),
 
         patient_id: String(consultation.patient_id),
 
@@ -1444,65 +2286,55 @@ export async function POST(request) {
 
     const client = await db.connect();
 
-    let recording;
+    let recording = null;
 
     try {
       await client.query("BEGIN");
 
       // ====================================================
-      // INSERT AUDIO RECORD
-      //
-      // Existing columns:
-      //
-      // consultation_id
-      // storage_key
-      // original_file_name
-      // mime_type
-      // file_size
-      // duration_seconds
-      // status
+      // AUDIO RECORD
       // ====================================================
 
       const audioResult = await client.query(
         `
-        INSERT INTO audio_recordings (
-          consultation_id,
-          storage_key,
-          original_file_name,
-          mime_type,
-          file_size,
-          duration_seconds,
-          status
-        )
+          INSERT INTO audio_recordings (
+            consultation_id,
+            storage_key,
+            original_file_name,
+            mime_type,
+            file_size,
+            duration_seconds,
+            status
+          )
 
-        VALUES (
-          $1,
-          $2,
-          $3,
-          $4,
-          $5,
-          $6,
-          'uploaded'
-        )
+          VALUES (
+            $1,
+            $2,
+            $3,
+            $4,
+            $5,
+            $6,
+            'uploaded'
+          )
 
-        RETURNING
-          id,
-          consultation_id,
-          storage_key,
-          original_file_name,
-          mime_type,
-          file_size,
-          duration_seconds,
-          status,
-          error_message,
-          created_at,
-          updated_at
-        `,
+          RETURNING
+            id,
+            consultation_id,
+            storage_key,
+            original_file_name,
+            mime_type,
+            file_size,
+            duration_seconds,
+            status,
+            error_message,
+            created_at,
+            updated_at
+          `,
         [
           consultationId,
           storageKey,
           originalFileName,
-          mimeType,
+          storageContentType,
           buffer.length,
           durationSeconds,
         ],
@@ -1514,22 +2346,30 @@ export async function POST(request) {
       // CONSULTATION STATUS
       // ====================================================
 
-      await client.query(
+      const updateConsultationResult = await client.query(
         `
-        UPDATE consultations
+          UPDATE consultations
 
-        SET
-          status = 'recorded',
-          updated_at = CURRENT_TIMESTAMP
+          SET
+            status = 'recorded',
+            updated_at =
+              CURRENT_TIMESTAMP
 
-        WHERE id = $1
-          AND doctor_id = $2
-        `,
-        [consultationId, session.userId],
+          WHERE id = $1
+            AND doctor_id = $2
+
+          RETURNING
+            id
+          `,
+        [consultationId, doctor.id],
       );
 
+      if (updateConsultationResult.rows.length === 0) {
+        throw new Error("Unable to update consultation status.");
+      }
+
       // ====================================================
-      // AUDIT LOG
+      // AUDIT
       // ====================================================
 
       try {
@@ -1552,7 +2392,7 @@ export async function POST(request) {
           )
           `,
           [
-            session.userId,
+            doctor.id,
 
             "UPLOAD_CONSULTATION_AUDIO",
 
@@ -1573,7 +2413,9 @@ export async function POST(request) {
 
               original_file_name: originalFileName,
 
-              mime_type: mimeType,
+              mime_type: storageContentType,
+
+              browser_mime_type: browserMimeType,
 
               file_size: buffer.length,
 
@@ -1588,7 +2430,6 @@ export async function POST(request) {
           ],
         );
       } catch (auditError) {
-        // Audit failure should not fail actual upload
         console.error("CONSULTATION AUDIO AUDIT ERROR:", auditError);
       }
 
@@ -1598,7 +2439,7 @@ export async function POST(request) {
         await client.query("ROLLBACK");
       } catch {}
 
-      // DB failed, remove newly uploaded S3 object
+      // DB failed -> remove newly uploaded S3 object
       await safeDeleteFromS3(storageKey);
 
       uploadedS3Key = null;
@@ -1609,38 +2450,16 @@ export async function POST(request) {
     }
 
     // ======================================================
-    // NEW RECORD IS NOW VALID
+    // VALID S3 FILE
     // ======================================================
 
     uploadedS3Key = null;
 
     // ======================================================
-    // DELETE OLD RECORDING
-    //
-    // DB currently keeps its old record for history,
-    // therefore DON'T delete its S3 file unless we also
-    // remove/update that DB row.
-    //
-    // This prevents broken historical DB references.
+    // SIGNED URL
     // ======================================================
 
-    // We intentionally do NOT delete:
-    //
-    // existingRecording.storage_key
-    //
-    // because the old audio_recordings row still exists.
-
-    // ======================================================
-    // SIGNED PRIVATE AUDIO URL
-    // ======================================================
-
-    let audioUrl = null;
-
-    try {
-      audioUrl = await getPrivateFileUrl(recording.storage_key, 60 * 60);
-    } catch (signedUrlError) {
-      console.error("GENERATE AUDIO SIGNED URL ERROR:", signedUrlError);
-    }
+    const signedRecording = await addSignedAudioUrl(recording);
 
     // ======================================================
     // RESPONSE
@@ -1652,35 +2471,24 @@ export async function POST(request) {
 
         message: "Audio uploaded successfully.",
 
-        audio_recording: {
-          ...recording,
-
-          // Temporary signed URL for <audio src="">
-          audio_url: audioUrl,
-        },
+        audio_recording: signedRecording,
       },
       {
         status: 201,
 
-        headers: {
-          "Cache-Control": "no-store",
-        },
+        headers: noStoreHeaders(),
       },
     );
   } catch (error) {
     console.error("UPLOAD CONSULTATION AUDIO ERROR:", error);
 
     // ======================================================
-    // EMERGENCY S3 CLEANUP
+    // EMERGENCY CLEANUP
     // ======================================================
 
     if (uploadedS3Key) {
       await safeDeleteFromS3(uploadedS3Key);
     }
-
-    // ======================================================
-    // RESPONSE
-    // ======================================================
 
     return NextResponse.json(
       {
@@ -1694,10 +2502,607 @@ export async function POST(request) {
       {
         status: 500,
 
-        headers: {
-          "Cache-Control": "no-store",
-        },
+        headers: noStoreHeaders(),
       },
     );
+  }
+}
+
+// ======================================================
+// DELETE
+// /api/doctors/consultations/audio
+//
+// BODY:
+//
+// {
+//   "consultation_id": 10,
+//   "audio_recording_id": 25
+// }
+//
+// Deletes:
+// - transcript generated from this recording
+// - transcription jobs for this recording
+// - audio_recordings row
+// - actual AWS S3 object
+//
+// Consultation is moved back to:
+// - "recorded" if another recording still exists
+// - "draft" if no recordings remain
+// ======================================================
+
+export async function DELETE(request) {
+  let client = null;
+
+  try {
+    // ======================================================
+    // SESSION
+    // ======================================================
+
+    const session = await getSession();
+
+    if (!session) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Unauthorized. Please login.",
+        },
+        {
+          status: 401,
+          headers: noStoreHeaders(),
+        },
+      );
+    }
+
+    // ======================================================
+    // ROLE
+    // ======================================================
+
+    if (session.role !== "doctor") {
+      return NextResponse.json(
+        {
+          success: false,
+
+          message: "Only doctors can delete consultation recordings.",
+        },
+        {
+          status: 403,
+          headers: noStoreHeaders(),
+        },
+      );
+    }
+
+    // ======================================================
+    // ACTIVE DOCTOR
+    // ======================================================
+
+    const { doctor, reason: doctorReason } = await getActiveDoctor(
+      session.userId,
+    );
+
+    if (doctorReason === "not_found") {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Doctor account not found.",
+        },
+        {
+          status: 404,
+          headers: noStoreHeaders(),
+        },
+      );
+    }
+
+    if (doctorReason === "inactive") {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Doctor account is inactive.",
+        },
+        {
+          status: 403,
+          headers: noStoreHeaders(),
+        },
+      );
+    }
+
+    // ======================================================
+    // BODY
+    // ======================================================
+
+    let body;
+
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Invalid request body.",
+        },
+        {
+          status: 400,
+          headers: noStoreHeaders(),
+        },
+      );
+    }
+
+    const consultationId = Number(body.consultation_id);
+
+    const audioRecordingId = Number(body.audio_recording_id);
+
+    // ======================================================
+    // VALIDATION
+    // ======================================================
+
+    if (!Number.isInteger(consultationId) || consultationId <= 0) {
+      return NextResponse.json(
+        {
+          success: false,
+
+          message: "Valid consultation ID is required.",
+        },
+        {
+          status: 400,
+          headers: noStoreHeaders(),
+        },
+      );
+    }
+
+    if (!Number.isInteger(audioRecordingId) || audioRecordingId <= 0) {
+      return NextResponse.json(
+        {
+          success: false,
+
+          message: "Valid audio recording ID is required.",
+        },
+        {
+          status: 400,
+          headers: noStoreHeaders(),
+        },
+      );
+    }
+
+    // ======================================================
+    // TRANSACTION
+    // ======================================================
+
+    client = await db.connect();
+
+    await client.query("BEGIN");
+
+    // ======================================================
+    // LOCK RECORDING + CONSULTATION
+    // ======================================================
+
+    const recordingResult = await client.query(
+      `
+        SELECT
+          ar.id,
+          ar.consultation_id,
+          ar.storage_key,
+          ar.original_file_name,
+          ar.mime_type,
+          ar.file_size,
+          ar.duration_seconds,
+          ar.status,
+          ar.created_at,
+
+          c.appointment_id,
+          c.patient_id,
+          c.doctor_id,
+          c.status
+            AS consultation_status
+
+        FROM audio_recordings ar
+
+        INNER JOIN consultations c
+          ON c.id =
+            ar.consultation_id
+
+        WHERE ar.id = $1
+          AND ar.consultation_id = $2
+
+        LIMIT 1
+
+        FOR UPDATE OF ar, c
+        `,
+      [audioRecordingId, consultationId],
+    );
+
+    if (recordingResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+
+      return NextResponse.json(
+        {
+          success: false,
+
+          message: "Audio recording was not found for this consultation.",
+        },
+        {
+          status: 404,
+          headers: noStoreHeaders(),
+        },
+      );
+    }
+
+    const recording = recordingResult.rows[0];
+
+    // ======================================================
+    // OWNERSHIP
+    // ======================================================
+
+    if (String(recording.doctor_id) !== String(doctor.id)) {
+      await client.query("ROLLBACK");
+
+      return NextResponse.json(
+        {
+          success: false,
+
+          message: "This audio recording does not belong to you.",
+        },
+        {
+          status: 403,
+          headers: noStoreHeaders(),
+        },
+      );
+    }
+
+    // ======================================================
+    // COMPLETED CONSULTATION
+    // ======================================================
+
+    if (recording.consultation_status === "completed") {
+      await client.query("ROLLBACK");
+
+      return NextResponse.json(
+        {
+          success: false,
+
+          message: "Recording cannot be deleted from a completed consultation.",
+        },
+        {
+          status: 400,
+          headers: noStoreHeaders(),
+        },
+      );
+    }
+
+    // ======================================================
+    // TRANSCRIPTION JOB IDS
+    // ======================================================
+
+    const jobResult = await client.query(
+      `
+        SELECT
+          id
+
+        FROM transcription_jobs
+
+        WHERE audio_recording_id = $1
+        `,
+      [audioRecordingId],
+    );
+
+    const transcriptionJobIds = jobResult.rows.map((row) => row.id);
+
+    // ======================================================
+    // DELETE TRANSCRIPT
+    //
+    // Only delete transcript if it belongs to a
+    // transcription job generated from THIS recording.
+    // ======================================================
+
+    let deletedTranscriptIds = [];
+
+    if (transcriptionJobIds.length > 0) {
+      const transcriptDeleteResult = await client.query(
+        `
+          DELETE FROM transcripts
+
+          WHERE consultation_id = $1
+
+            AND transcription_job_id =
+              ANY($2::int[])
+
+          RETURNING
+            id
+          `,
+        [consultationId, transcriptionJobIds],
+      );
+
+      deletedTranscriptIds = transcriptDeleteResult.rows.map((row) => row.id);
+    }
+
+    // ======================================================
+    // DELETE TRANSCRIPTION JOBS
+    // ======================================================
+
+    const deletedJobsResult = await client.query(
+      `
+        DELETE FROM transcription_jobs
+
+        WHERE audio_recording_id = $1
+
+        RETURNING
+          id
+        `,
+      [audioRecordingId],
+    );
+
+    const deletedJobIds = deletedJobsResult.rows.map((row) => row.id);
+
+    // ======================================================
+    // DELETE AUDIO RECORD DB ROW
+    // ======================================================
+
+    const deleteRecordingResult = await client.query(
+      `
+        DELETE FROM audio_recordings
+
+        WHERE id = $1
+          AND consultation_id = $2
+
+        RETURNING
+          id
+        `,
+      [audioRecordingId, consultationId],
+    );
+
+    if (deleteRecordingResult.rows.length === 0) {
+      throw new Error("Unable to delete audio recording.");
+    }
+
+    // ======================================================
+    // CHECK REMAINING RECORDING
+    // ======================================================
+
+    const remainingRecordingResult = await client.query(
+      `
+        SELECT
+          id,
+          consultation_id,
+          storage_key,
+          original_file_name,
+          mime_type,
+          file_size,
+          duration_seconds,
+          status,
+          error_message,
+          created_at,
+          updated_at
+
+        FROM audio_recordings
+
+        WHERE consultation_id = $1
+
+        ORDER BY
+          created_at DESC,
+          id DESC
+
+        LIMIT 1
+        `,
+      [consultationId],
+    );
+
+    const remainingRecording = remainingRecordingResult.rows[0] || null;
+
+    // ======================================================
+    // CONSULTATION STATUS
+    //
+    // Another recording exists:
+    // recorded
+    //
+    // No audio remains:
+    // draft
+    // ======================================================
+
+    const nextConsultationStatus = remainingRecording ? "recorded" : "draft";
+
+    const consultationUpdateResult = await client.query(
+      `
+        UPDATE consultations
+
+        SET
+          status = $1,
+          updated_at =
+            CURRENT_TIMESTAMP
+
+        WHERE id = $2
+          AND doctor_id = $3
+
+        RETURNING
+          id,
+          appointment_id,
+          patient_id,
+          doctor_id,
+          started_at,
+          ended_at,
+          status,
+          clinical_notes,
+          diagnosis,
+          created_at,
+          updated_at
+        `,
+      [nextConsultationStatus, consultationId, doctor.id],
+    );
+
+    if (consultationUpdateResult.rows.length === 0) {
+      throw new Error(
+        "Unable to update consultation after deleting recording.",
+      );
+    }
+
+    const updatedConsultation = consultationUpdateResult.rows[0];
+
+    // ======================================================
+    // AUDIT
+    // ======================================================
+
+    try {
+      await client.query(
+        `
+        INSERT INTO audit_logs (
+          user_id,
+          action,
+          entity_type,
+          entity_id,
+          details
+        )
+
+        VALUES (
+          $1,
+          $2,
+          $3,
+          $4,
+          $5
+        )
+        `,
+        [
+          doctor.id,
+
+          "DELETE_CONSULTATION_AUDIO",
+
+          "consultation",
+
+          consultationId,
+
+          JSON.stringify({
+            consultation_id: consultationId,
+
+            appointment_id: recording.appointment_id,
+
+            patient_id: recording.patient_id,
+
+            doctor_id: recording.doctor_id,
+
+            deleted_audio_recording_id: audioRecordingId,
+
+            deleted_storage_key: recording.storage_key,
+
+            deleted_transcript_ids: deletedTranscriptIds,
+
+            deleted_transcription_job_ids: deletedJobIds,
+
+            remaining_audio_recording_id: remainingRecording?.id || null,
+
+            previous_consultation_status: recording.consultation_status,
+
+            new_consultation_status: nextConsultationStatus,
+
+            storage_provider: "aws_s3",
+          }),
+        ],
+      );
+    } catch (auditError) {
+      console.error("DELETE CONSULTATION AUDIO AUDIT ERROR:", auditError);
+    }
+
+    // ======================================================
+    // COMMIT DB
+    // ======================================================
+
+    await client.query("COMMIT");
+
+    client.release();
+    client = null;
+
+    // ======================================================
+    // DELETE PHYSICAL S3 OBJECT
+    //
+    // DB is already clean at this point.
+    //
+    // If AWS deletion fails we report it clearly.
+    // ======================================================
+
+    const s3Deleted = await safeDeleteFromS3(recording.storage_key);
+
+    if (!s3Deleted) {
+      return NextResponse.json(
+        {
+          success: false,
+
+          message:
+            "Recording was removed from the database, but the S3 file could not be deleted.",
+
+          partial_cleanup: true,
+
+          deleted_audio_recording_id: audioRecordingId,
+
+          consultation: updatedConsultation,
+        },
+        {
+          status: 500,
+          headers: noStoreHeaders(),
+        },
+      );
+    }
+
+    // ======================================================
+    // SIGN REMAINING RECORDING
+    // ======================================================
+
+    const signedRemainingRecording =
+      await addSignedAudioUrl(remainingRecording);
+
+    // ======================================================
+    // RESPONSE
+    // ======================================================
+
+    return NextResponse.json(
+      {
+        success: true,
+
+        message: "Recording deleted successfully.",
+
+        deleted_audio_recording_id: audioRecordingId,
+
+        deleted_transcript_ids: deletedTranscriptIds,
+
+        deleted_transcription_job_ids: deletedJobIds,
+
+        consultation: updatedConsultation,
+
+        remaining_audio_recording: signedRemainingRecording,
+      },
+      {
+        status: 200,
+
+        headers: noStoreHeaders(),
+      },
+    );
+  } catch (error) {
+    // ======================================================
+    // ROLLBACK
+    // ======================================================
+
+    if (client) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error("DELETE AUDIO ROLLBACK ERROR:", rollbackError);
+      }
+    }
+
+    console.error("DELETE CONSULTATION AUDIO ERROR:", error);
+
+    return NextResponse.json(
+      {
+        success: false,
+
+        message: "Unable to delete consultation recording.",
+
+        error:
+          process.env.NODE_ENV === "development" ? error.message : undefined,
+      },
+      {
+        status: 500,
+
+        headers: noStoreHeaders(),
+      },
+    );
+  } finally {
+    if (client) {
+      client.release();
+    }
   }
 }
